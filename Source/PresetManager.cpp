@@ -1,0 +1,235 @@
+#include "PresetManager.h"
+#include "Params.h"
+
+namespace
+{
+    const juce::String presetExtension { ".lvpreset" };
+}
+
+PresetManager::PresetManager (juce::AudioProcessorValueTreeState& state)
+    : apvts (state), factory (buildFactoryPresets())
+{
+    getUserPresetDirectory().createDirectory();
+}
+
+juce::File PresetManager::getUserPresetDirectory()
+{
+    auto base = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+   #if JUCE_MAC
+    base = base.getChildFile ("Application Support");
+   #endif
+    return base.getChildFile ("LiveVoice").getChildFile ("Presets");
+}
+
+bool PresetManager::isPresetParameter (const juce::String& id)
+{
+    static const juce::StringArray excluded { params::inGain, params::outGain, params::limitOn, params::ceiling,
+                                              params::bypass, params::fbLearn, params::fbFreeze };
+    return ! excluded.contains (id);
+}
+
+juce::StringArray PresetManager::getFactoryNames() const
+{
+    juce::StringArray names;
+    for (auto& f : factory) names.add (f.name);
+    return names;
+}
+
+juce::StringArray PresetManager::getUserNames() const
+{
+    juce::StringArray names;
+    for (auto& f : getUserPresetDirectory().findChildFiles (juce::File::findFiles, false, "*" + presetExtension))
+        names.add (f.getFileNameWithoutExtension());
+    names.sortNatural();
+    return names;
+}
+
+void PresetManager::applyValues (const std::vector<std::pair<juce::String, float>>& values)
+{
+    for (auto* p : apvts.processor.getParameters())
+    {
+        auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p);
+        if (rp == nullptr || ! isPresetParameter (rp->getParameterID()))
+            continue;
+
+        float norm = rp->getDefaultValue();
+        for (auto& [id, v] : values)
+            if (id == rp->getParameterID()) { norm = rp->convertTo0to1 (v); break; }
+
+        rp->beginChangeGesture();
+        rp->setValueNotifyingHost (norm);
+        rp->endChangeGesture();
+    }
+}
+
+bool PresetManager::loadFactory (int index)
+{
+    if (! juce::isPositiveAndBelow (index, (int) factory.size()))
+        return false;
+    applyValues (factory[(size_t) index].values);
+    currentName = factory[(size_t) index].name;
+    return true;
+}
+
+bool PresetManager::loadUser (const juce::String& name)
+{
+    auto file = getUserPresetDirectory().getChildFile (juce::File::createLegalFileName (name) + presetExtension);
+    auto xml = juce::XmlDocument::parse (file);
+    if (xml == nullptr || ! xml->hasTagName ("LiveVoicePreset"))
+        return false;
+
+    std::vector<std::pair<juce::String, float>> values;
+    for (auto* e : xml->getChildWithTagNameIterator ("Param"))
+        values.emplace_back (e->getStringAttribute ("id"), (float) e->getDoubleAttribute ("value"));
+
+    applyValues (values);
+    currentName = name;
+    return true;
+}
+
+bool PresetManager::saveUser (const juce::String& name)
+{
+    const auto legal = juce::File::createLegalFileName (name.trim());
+    if (legal.isEmpty())
+        return false;
+
+    juce::XmlElement xml ("LiveVoicePreset");
+    xml.setAttribute ("version", 1);
+    xml.setAttribute ("name", name.trim());
+
+    for (auto* p : apvts.processor.getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+            if (isPresetParameter (rp->getParameterID()))
+            {
+                auto* e = xml.createNewChildElement ("Param");
+                e->setAttribute ("id", rp->getParameterID());
+                e->setAttribute ("value", rp->convertFrom0to1 (rp->getValue()));
+            }
+
+    auto dir = getUserPresetDirectory();
+    dir.createDirectory();
+    if (! xml.writeTo (dir.getChildFile (legal + presetExtension)))
+        return false;
+
+    currentName = name.trim();
+    return true;
+}
+
+bool PresetManager::deleteUser (const juce::String& name)
+{
+    auto file = getUserPresetDirectory().getChildFile (juce::File::createLegalFileName (name) + presetExtension);
+    return file.existsAsFile() && file.deleteFile();
+}
+
+// ---------------------------------------------------------------------------
+// Factory presets: sensible starting points, meant to be tweaked at soundcheck.
+// Band types: band 1 {0 Bell, 1 Low Shelf, 2 HP12, 3 HP24}; band 6 {0 Bell, 1 High Shelf, 2 LP12, 3 LP24}.
+// ---------------------------------------------------------------------------
+std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
+{
+    using namespace params;
+    using V = std::vector<std::pair<juce::String, float>>;
+
+    auto band = [] (V& v, int b, bool on, float freq, float gain, float q)
+    {
+        v.push_back ({ bOn (b), on ? 1.0f : 0.0f });
+        v.push_back ({ bFreq (b), freq });
+        v.push_back ({ bGain (b), gain });
+        v.push_back ({ bQ (b), q });
+    };
+    auto dyn = [] (V& v, int b, float thr, float range, float ratio, float att, float rel)
+    {
+        v.push_back ({ bDyn (b), 1.0f });
+        v.push_back ({ bThr (b), thr });
+        v.push_back ({ bRange (b), range });
+        v.push_back ({ bRatio (b), ratio });
+        v.push_back ({ bAtt (b), att });
+        v.push_back ({ bRel (b), rel });
+    };
+    auto fb = [] (V& v, int mode, float sens, float depth, int width, float hold, float lo, float hi)
+    {
+        v.push_back ({ fbMode, (float) mode });
+        v.push_back ({ fbSens, sens });
+        v.push_back ({ fbMaxDepth, depth });
+        v.push_back ({ fbWidth, (float) width });
+        v.push_back ({ fbHold, hold });
+        v.push_back ({ fbLoFreq, lo });
+        v.push_back ({ fbHiFreq, hi });
+    };
+    auto ds = [] (V& v, bool on, float freq, float thr, float range, int mode, float rel)
+    {
+        v.push_back ({ dsOn, on ? 1.0f : 0.0f });
+        v.push_back ({ dsFreq, freq });
+        v.push_back ({ dsThr, thr });
+        v.push_back ({ dsRange, range });
+        v.push_back ({ dsMode, (float) mode });
+        v.push_back ({ dsRel, rel });
+    };
+
+    std::vector<Factory> out;
+
+    out.push_back ({ "Default", {} });
+
+    { // Headworn/face mic on a pastor: aggressive feedback control, tame chest boom
+        V v;
+        fb (v, 0, 55.0f, -18.0f, 2, 30.0f, 150.0f, 10000.0f);
+        v.push_back ({ bType (0), 3.0f }); band (v, 0, true, 110.0f, 0.0f, 0.7f);
+        band (v, 1, true, 250.0f, -1.5f, 1.0f);  dyn (v, 1, -30.0f, -4.0f, 3.0f, 10.0f, 150.0f);
+        band (v, 2, false, 500.0f, 0.0f, 1.0f);
+        band (v, 3, true, 2500.0f, 1.5f, 1.0f);
+        band (v, 4, true, 4500.0f, 0.0f, 2.0f);  dyn (v, 4, -32.0f, -4.0f, 3.0f, 3.0f, 100.0f);
+        v.push_back ({ bType (5), 1.0f }); band (v, 5, true, 10000.0f, 1.0f, 0.7f);
+        ds (v, true, 6500.0f, -32.0f, 6.0f, 0, 80.0f);
+        out.push_back ({ "Pastor - Face Mic (Speech)", v });
+    }
+    { // Pulpit / lectern gooseneck
+        V v;
+        fb (v, 0, 60.0f, -18.0f, 2, 30.0f, 150.0f, 10000.0f);
+        v.push_back ({ bType (0), 3.0f }); band (v, 0, true, 120.0f, 0.0f, 0.7f);
+        band (v, 1, true, 200.0f, 0.0f, 1.0f);   dyn (v, 1, -28.0f, -5.0f, 3.0f, 10.0f, 150.0f);
+        band (v, 2, false, 500.0f, 0.0f, 1.0f);
+        band (v, 3, true, 2500.0f, 2.0f, 1.0f);
+        band (v, 4, false, 5000.0f, 0.0f, 2.0f);
+        v.push_back ({ bType (5), 1.0f }); band (v, 5, false, 10000.0f, 0.0f, 0.7f);
+        ds (v, true, 6000.0f, -30.0f, 6.0f, 0, 80.0f);
+        out.push_back ({ "Spoken Word - Lectern Mic", v });
+    }
+    { // Handheld male vocal: dynamic low-mid band tames proximity effect
+        V v;
+        fb (v, 1, 45.0f, -15.0f, 2, 20.0f, 150.0f, 10000.0f);
+        v.push_back ({ bType (0), 3.0f }); band (v, 0, true, 90.0f, 0.0f, 0.7f);
+        band (v, 1, true, 200.0f, 0.0f, 1.0f);   dyn (v, 1, -26.0f, -5.0f, 3.0f, 10.0f, 150.0f);
+        band (v, 2, true, 400.0f, -1.5f, 1.2f);
+        band (v, 3, true, 3000.0f, 2.0f, 1.2f);
+        band (v, 4, true, 5000.0f, 0.0f, 2.0f);  dyn (v, 4, -30.0f, -4.0f, 3.0f, 3.0f, 100.0f);
+        v.push_back ({ bType (5), 1.0f }); band (v, 5, true, 12000.0f, 2.0f, 0.7f);
+        ds (v, true, 5500.0f, -30.0f, 7.0f, 0, 80.0f);
+        out.push_back ({ "Male Vocal - Handheld", v });
+    }
+    { // Handheld female vocal
+        V v;
+        fb (v, 1, 45.0f, -15.0f, 2, 20.0f, 150.0f, 10000.0f);
+        v.push_back ({ bType (0), 3.0f }); band (v, 0, true, 120.0f, 0.0f, 0.7f);
+        band (v, 1, true, 250.0f, 0.0f, 1.0f);   dyn (v, 1, -28.0f, -4.0f, 3.0f, 10.0f, 150.0f);
+        band (v, 2, true, 800.0f, -1.0f, 1.2f);
+        band (v, 3, true, 3500.0f, 1.5f, 1.2f);
+        band (v, 4, true, 6000.0f, 0.0f, 2.0f);  dyn (v, 4, -30.0f, -4.0f, 3.0f, 3.0f, 100.0f);
+        v.push_back ({ bType (5), 1.0f }); band (v, 5, true, 12000.0f, 2.0f, 0.7f);
+        ds (v, true, 7500.0f, -30.0f, 7.0f, 0, 80.0f);
+        out.push_back ({ "Female Vocal - Handheld", v });
+    }
+    { // Worship leader who both speaks and sings
+        V v;
+        fb (v, 2, 50.0f, -15.0f, 2, 25.0f, 150.0f, 10000.0f);
+        v.push_back ({ bType (0), 3.0f }); band (v, 0, true, 100.0f, 0.0f, 0.7f);
+        band (v, 1, true, 220.0f, 0.0f, 1.0f);   dyn (v, 1, -27.0f, -4.0f, 3.0f, 10.0f, 150.0f);
+        band (v, 2, false, 500.0f, 0.0f, 1.0f);
+        band (v, 3, true, 3000.0f, 1.5f, 1.2f);
+        band (v, 4, true, 5000.0f, 0.0f, 2.0f);  dyn (v, 4, -30.0f, -4.0f, 3.0f, 3.0f, 100.0f);
+        v.push_back ({ bType (5), 1.0f }); band (v, 5, true, 12000.0f, 1.5f, 0.7f);
+        ds (v, true, 6500.0f, -30.0f, 6.0f, 0, 80.0f);
+        out.push_back ({ "Worship Leader - Speak & Sing", v });
+    }
+
+    return out;
+}
