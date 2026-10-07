@@ -17,6 +17,8 @@ namespace theme
     inline const juce::Colour eq        { 0xff2ec4b6 };   // teal
     inline const juce::Colour feedback  { 0xffff8a3d };   // orange
     inline const juce::Colour deess     { 0xffa78bfa };   // violet
+    inline const juce::Colour pse       { 0xff8bd450 };   // green
+    inline const juce::Colour comp      { 0xfff6c453 };   // amber
     inline const juce::Colour input     { 0xff5b6676 };
     inline const juce::Colour output    { 0xff4c8dff };
     inline const juce::Colour good      { 0xff3ecf6e };

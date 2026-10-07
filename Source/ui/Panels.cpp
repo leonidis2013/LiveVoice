@@ -145,13 +145,16 @@ void DeEssHistogram::paint (juce::Graphics& g)
 
     const auto v = [this] (const juce::String& id) { return proc.apvts.getRawParameterValue (id)->load(); };
     const bool on = v (dsOn) > 0.5f;
-    const float thr = v (dsThr), rangeDb = std::max (1.0f, v (dsRange));
+    const bool relative = v (dsRelative) > 0.5f;
+    const float thr = relative ? v (dsRelThr) : v (dsThr), rangeDb = std::max (1.0f, v (dsRange));
+    // absolute: sibilance in dBFS (-60..0); relative: sibilance vs whole voice (-40..+8 dB)
+    const float lo = relative ? -40.0f : -60.0f, hi = relative ? 8.0f : 0.0f;
 
-    auto yFor = [&] (float db) { return juce::jmap (juce::jlimit (-60.0f, 0.0f, db), 0.0f, -60.0f, area.getY(), area.getBottom()); };
+    auto yFor = [&] (float db) { return juce::jmap (juce::jlimit (lo, hi, db), hi, lo, area.getY(), area.getBottom()); };
 
     // grid
     g.setColour (theme::grid);
-    for (float db = 0.0f; db >= -60.0f; db -= 12.0f) g.drawHorizontalLine ((int) yFor (db), area.getX(), area.getRight());
+    for (int i = 0; i <= 4; ++i) g.drawHorizontalLine ((int) (area.getY() + area.getHeight() * (float) i / 4.0f), area.getX(), area.getRight());
 
     const int n = (int) points.size();
     const float colW = area.getWidth() / (float) std::max (1, n);
@@ -190,7 +193,7 @@ void DeEssHistogram::paint (juce::Graphics& g)
     const float gr = proc.deEsser.getCurrentGainReductionDb();
     g.drawText (on ? ("GR " + juce::String (gr, 1) + " dB") : "OFF", labelArea.withTrimmedLeft (20.0f).withTrimmedTop (30.0f).removeFromTop (18.0f),
                 juce::Justification::centredLeft);
-    g.drawText ("thr " + juce::String (thr, 0) + " dB", labelArea.withTrimmedLeft (20.0f).withTrimmedTop (48.0f).removeFromTop (18.0f),
+    g.drawText ((relative ? "rel thr " : "thr ") + juce::String (thr, 0) + " dB", labelArea.withTrimmedLeft (20.0f).withTrimmedTop (48.0f).removeFromTop (18.0f),
                 juce::Justification::centredLeft);
 
     g.setColour (theme::border);
@@ -250,6 +253,9 @@ FeedbackPanel::FeedbackPanel (LiveVoiceProcessor& p) : ModulePanel ("FEEDBACK SU
     status.setColour (juce::Label::textColourId, theme::textDim);
     status.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (status);
+    gbfTile.setTooltip ("Gain before feedback gained in the ring-out: how far above the first feedback point the system held stable. "
+                        "Measured from LiveVoice's INPUT/OUTPUT (and compressor makeup) gain while Learn is on - raise gain here during ring-out, not on the console.");
+    addAndMakeVisible (gbfTile);
 }
 
 void FeedbackPanel::resized()
@@ -274,6 +280,9 @@ void FeedbackPanel::resized()
 
     r.removeFromTop (6);
     status.setBounds (r.removeFromBottom (18));
+    r.removeFromBottom (4);
+    gbfTile.setBounds (r.removeFromBottom (58));
+    r.removeFromBottom (6);
 
     const int knobH = std::min (92, (r.getHeight() - 8) / 2);
     row = r.removeFromTop (knobH);
@@ -300,6 +309,7 @@ void FeedbackPanel::update()
     else if (v (fbFreeze) > 0.5f) txt << "   FROZEN";
     status.setText (txt, juce::dontSendNotification);
     status.setColour (juce::Label::textColourId, v (fbLearn) > 0.5f ? theme::feedback : theme::textDim);
+    gbfTile.update();
 }
 
 // ================================================================ EQ panel
@@ -423,7 +433,12 @@ DeEssPanel::DeEssPanel (LiveVoiceProcessor& p) : ModulePanel ("DE-ESSER", theme:
     power.attach (s, dsOn);
     mode.attach (s, dsMode, { "Split (highs only)", "Wideband" });
     addAndMakeVisible (mode);
-    freq.attach (s, dsFreq); thr.attach (s, dsThr); range.attach (s, dsRange); rel.attach (s, dsRel);
+    relative.attach (s, dsRelative);
+    relative.setTooltip ("Relative detection: compares the sibilance with the whole voice instead of a fixed level, "
+                         "so a soft talker and a loud talker are de-essed the same. Off = classic absolute threshold.");
+    addAndMakeVisible (relative);
+    freq.attach (s, dsFreq); range.attach (s, dsRange); rel.attach (s, dsRel);
+    bindThreshold();
     for (auto* k : { &freq, &thr, &range, &rel }) addAndMakeVisible (k);
     addAndMakeVisible (grMeter);
     grLabel.setFont (theme::font (11.0f));
@@ -433,16 +448,27 @@ DeEssPanel::DeEssPanel (LiveVoiceProcessor& p) : ModulePanel ("DE-ESSER", theme:
     addAndMakeVisible (grLabel);
 }
 
+void DeEssPanel::bindThreshold()
+{
+    const int isRel = proc.apvts.getRawParameterValue (dsRelative)->load() > 0.5f ? 1 : 0;
+    if (isRel == boundRelative) return;
+    boundRelative = isRel;
+    thr.attach (proc.apvts, isRel ? dsRelThr : dsThr);
+    thr.label.setText (isRel ? "Rel. Threshold" : "Threshold", juce::dontSendNotification);
+}
+
 void DeEssPanel::resized()
 {
     layoutHeader();
     auto r = getContentBounds();
-    auto meterCol = r.removeFromRight (30);
+    auto meterCol = r.removeFromRight (26);
     grLabel.setBounds (meterCol.removeFromTop (16));
     grMeter.setBounds (meterCol.withSizeKeepingCentre (10, meterCol.getHeight() - 4));
     r.removeFromRight (6);
 
     mode.setBounds (r.removeFromTop (26));
+    r.removeFromTop (6);
+    relative.setBounds (r.removeFromTop (26));
     r.removeFromTop (12);
     const int knobH = std::min (92, (r.getHeight() - 10) / 2);
     auto row = r.removeFromTop (knobH);
@@ -456,7 +482,182 @@ void DeEssPanel::resized()
 
 void DeEssPanel::update()
 {
+    bindThreshold();
     grMeter.setValue (proc.deEsser.getCurrentGainReductionDb());
+}
+
+// ================================================================ GBF tile
+void GbfTile::update()
+{
+    const float first = proc.gbfFirstRingGain.load();
+    const float g = proc.getGbfGainedDb();
+    const bool learning = proc.apvts.getRawParameterValue (fbLearn)->load() > 0.5f;
+    const int s = std::isnan (first) ? (learning ? 1 : 0) : (std::isnan (g) ? 2 : 3);
+    if (s != state || (s == 3 && std::abs (g - shown) > 0.05f))
+    {
+        state = s; shown = g;
+        repaint();
+    }
+}
+
+void GbfTile::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat();
+    g.setColour (theme::bg);
+    g.fillRoundedRectangle (r, 6.0f);
+    g.setColour (state == 3 ? theme::feedback.withAlpha (0.6f) : theme::border);
+    g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
+
+    auto inner = r.reduced (12.0f, 6.0f);
+    juce::String big, small;
+    switch (state)
+    {
+        case 3:  big = "+" + juce::String (shown, 1) + " dB"; small = "gained over the first feedback point"; break;
+        case 2:  big = "...";  small = "hold the gain steady for 4 s"; break;
+        case 1:  big = "--";   small = "raise INPUT/OUTPUT gain to the first ring"; break;
+        default: big = "--";   small = "run a ring-out with Learn to measure"; break;
+    }
+    auto left = inner.removeFromLeft (inner.getWidth() * 0.62f);
+    g.setColour (theme::textDim);
+    g.setFont (theme::font (11.0f, true));
+    g.drawText ("GAIN BEFORE FEEDBACK", left.removeFromTop (left.getHeight() * 0.5f), juce::Justification::bottomLeft);
+    g.setColour (theme::textFaint);
+    g.setFont (theme::font (10.5f));
+    g.drawText (small, left, juce::Justification::topLeft);
+    g.setColour (state == 3 ? theme::feedback : theme::textDim);
+    g.setFont (theme::font (state == 3 ? 24.0f : 20.0f, true));
+    g.drawText (big, inner, juce::Justification::centredRight);
+}
+
+// ================================================================ PSE
+void PseKeyMeter::update()
+{
+    const float k = proc.pse.getKeyLevelDb();
+    key = k > key ? k : std::max (k, key - 1.5f);
+    repaint();
+}
+
+void PseKeyMeter::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat();
+    const auto v = [this] (const juce::String& id) { return proc.apvts.getRawParameterValue (id)->load(); };
+    const bool on = v (pseOn) > 0.5f;
+    const bool open = ! on || proc.pse.getIsOpen();
+    const float thr = v (pseThr);
+
+    // lamp + state text
+    auto top = r.removeFromTop (16.0f);
+    const auto lampCol = ! on ? theme::textFaint : (open ? theme::pse : theme::warn);
+    g.setColour (lampCol);
+    g.fillEllipse (top.getX() + 1.0f, top.getCentreY() - 4.0f, 8.0f, 8.0f);
+    g.setFont (theme::font (11.0f, true));
+    g.drawText (! on ? "OFF" : (open ? "OPEN" : "CLOSED  -" + juce::String (proc.pse.getGainReductionDb(), 1) + " dB"),
+                top.withTrimmedLeft (14.0f), juce::Justification::centredLeft);
+    g.setColour (theme::textFaint);
+    g.setFont (theme::font (10.0f));
+    g.drawText ("key level", top, juce::Justification::centredRight);
+
+    // key bar (-80..0 dBFS) with threshold + close point
+    auto bar = r.withTrimmedTop (3.0f).withHeight (8.0f);
+    auto toX = [&] (float db) { return bar.getX() + bar.getWidth() * juce::jlimit (0.0f, 1.0f, (db + 80.0f) / 80.0f); };
+    g.setColour (theme::bg);
+    g.fillRoundedRectangle (bar, 2.0f);
+    g.setColour ((key >= thr ? theme::pse : theme::textDim).withAlpha (0.85f));
+    g.fillRoundedRectangle (bar.withRight (toX (key)), 2.0f);
+    g.setColour (theme::text);
+    g.fillRect (juce::Rectangle<float> (toX (thr) - 1.0f, bar.getY() - 3.0f, 2.0f, bar.getHeight() + 6.0f));
+    g.setColour (theme::textFaint);
+    g.fillRect (juce::Rectangle<float> (toX (thr - dsp::PrimarySourceExpander::hysteresisDb) - 0.5f, bar.getY(), 1.0f, bar.getHeight()));
+}
+
+PsePanel::PsePanel (LiveVoiceProcessor& p) : ModulePanel ("PSE", theme::pse), proc (p)
+{
+    auto& s = proc.apvts;
+    power.attach (s, pseOn);
+    keyMeter.setTooltip ("Primary Source Expander: smoothly turns the mic down between phrases, cutting stage bleed and room pickup "
+                "and lowering the chance of feedback while the mic is idle. Set the threshold just below the softest speech.");
+    addAndMakeVisible (keyMeter);
+    thr.attach (s, pseThr); range.attach (s, pseRange); attack.attach (s, pseAttack);
+    hold.attach (s, pseHold); release.attach (s, pseRelease); scHp.attach (s, pseScHp); scLp.attach (s, pseScLp);
+    for (auto* k : { &thr, &range, &attack, &hold, &release, &scHp, &scLp }) addAndMakeVisible (k);
+}
+
+void PsePanel::resized()
+{
+    layoutHeader();
+    auto r = getContentBounds();
+    keyMeter.setBounds (r.removeFromTop (30));
+    r.removeFromTop (10);
+    const int knobH = std::min (92, (r.getHeight() - 16) / 3);
+    const int kw = r.getWidth() / 3;
+    auto row = r.removeFromTop (knobH);
+    for (auto* k : { &thr, &range, &attack }) k->setBounds (row.removeFromLeft (kw));
+    r.removeFromTop (8);
+    row = r.removeFromTop (knobH);
+    for (auto* k : { &hold, &release }) k->setBounds (row.removeFromLeft (kw));
+    r.removeFromTop (8);
+    row = r.removeFromTop (knobH);
+    for (auto* k : { &scHp, &scLp }) k->setBounds (row.removeFromLeft (kw));
+}
+
+void PsePanel::update()
+{
+    keyMeter.update();
+}
+
+// ================================================================ compressor
+CompPanel::CompPanel (LiveVoiceProcessor& p) : ModulePanel ("COMPRESSOR", theme::comp), proc (p)
+{
+    auto& s = proc.apvts;
+    power.attach (s, compOn);
+    autoRel.attach (s, compAuto);
+    autoRel.setTooltip ("Program-dependent release: recovers quickly after short peaks and more gently after sustained "
+                        "compression, like an optical compressor. The Release knob sets the overall speed.");
+    addAndMakeVisible (autoRel);
+    thr.attach (s, compThr); ratio.attach (s, compRatio); knee.attach (s, compKnee);
+    attack.attach (s, compAttack); release.attach (s, compRelease); makeup.attach (s, compMakeup);
+    mix.attach (s, compMix); scHp.attach (s, compScHp);
+    for (auto* k : { &thr, &ratio, &knee, &attack, &release, &makeup, &mix, &scHp }) addAndMakeVisible (k);
+    addAndMakeVisible (grMeter);
+    for (auto* l : { &grLabel, &grValue })
+    {
+        l->setFont (theme::font (11.0f));
+        l->setColour (juce::Label::textColourId, theme::textDim);
+        l->setJustificationType (juce::Justification::centred);
+        addAndMakeVisible (l);
+    }
+    grLabel.setText ("GR", juce::dontSendNotification);
+}
+
+void CompPanel::resized()
+{
+    layoutHeader();
+    auto r = getContentBounds();
+    auto meterCol = r.removeFromRight (30);
+    grLabel.setBounds (meterCol.removeFromTop (16));
+    grValue.setBounds (meterCol.removeFromBottom (16));
+    grMeter.setBounds (meterCol.withSizeKeepingCentre (10, meterCol.getHeight() - 4));
+    r.removeFromRight (4);
+
+    autoRel.setBounds (r.removeFromTop (26).withTrimmedRight (r.getWidth() / 3));
+    r.removeFromTop (10);
+    const int knobH = std::min (92, (r.getHeight() - 16) / 3);
+    const int kw = r.getWidth() / 3;
+    auto row = r.removeFromTop (knobH);
+    for (auto* k : { &thr, &ratio, &knee }) k->setBounds (row.removeFromLeft (kw));
+    r.removeFromTop (8);
+    row = r.removeFromTop (knobH);
+    for (auto* k : { &attack, &release, &makeup }) k->setBounds (row.removeFromLeft (kw));
+    r.removeFromTop (8);
+    row = r.removeFromTop (knobH);
+    for (auto* k : { &mix, &scHp }) k->setBounds (row.removeFromLeft (kw));
+}
+
+void CompPanel::update()
+{
+    const float gr = proc.comp.getGainReductionDb();
+    grMeter.setValue (gr);
+    grValue.setText (juce::String (gr, 1), juce::dontSendNotification);
 }
 
 // ================================================================ header
@@ -511,7 +712,7 @@ void HeaderBar::resized()
     const int h = 26, cy = getHeight() / 2;
     auto centreRow = [&] (juce::Rectangle<int> b) { return b.withSizeKeepingCentre (b.getWidth(), h).withY (cy - h / 2); };
 
-    presetBox.setBounds (centreRow (r.removeFromLeft (220)));
+    presetBox.setBounds (centreRow (r.removeFromLeft (280)));
     r.removeFromLeft (6);
     saveBtn.setBounds (centreRow (r.removeFromLeft (58)));
     r.removeFromLeft (4);
@@ -533,11 +734,11 @@ void HeaderBar::resized()
         r.removeFromRight (14);
     };
 
-    gainBlock (ceiling, &limMeter, 172);
+    gainBlock (ceiling, &limMeter, 210);
     limit.setBounds (centreRow (r.removeFromRight (60)));
     r.removeFromRight (14);
-    gainBlock (outGain, &outMeter, 184);
-    gainBlock (inGain, &inMeter, 184);
+    gainBlock (outGain, &outMeter, 240);
+    gainBlock (inGain, &inMeter, 240);
 }
 
 void HeaderBar::update()

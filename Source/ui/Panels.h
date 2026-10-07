@@ -86,6 +86,31 @@ private:
     std::vector<dsp::DeEsser::HistoryPoint> points;
 };
 
+// Big readout of gain-before-feedback gained in the ring-out.
+class GbfTile : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    explicit GbfTile (LiveVoiceProcessor& p) : proc (p) {}
+    void update();
+    void paint (juce::Graphics&) override;
+private:
+    LiveVoiceProcessor& proc;
+    float shown = -1000.0f;
+    int state = -1;
+};
+
+// PSE key level vs threshold, with an open/closed lamp.
+class PseKeyMeter : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    explicit PseKeyMeter (LiveVoiceProcessor& p) : proc (p) {}
+    void update();
+    void paint (juce::Graphics&) override;
+private:
+    LiveVoiceProcessor& proc;
+    float key = -100.0f;
+};
+
 // ---------------------------------------------------------------- panels
 class FeedbackPanel : public ModulePanel
 {
@@ -103,6 +128,7 @@ private:
          maxFixed { "Fixed Max", theme::feedback }, maxFloat { "Floating Max", theme::feedback },
          lo { "Low Limit", theme::feedback }, hi { "High Limit", theme::feedback };
     juce::Label modeLabel, widthLabel, status;
+    GbfTile gbfTile { proc };
 };
 
 class EqPanel : public ModulePanel
@@ -136,10 +162,43 @@ public:
 
 private:
     LiveVoiceProcessor& proc;
+    void bindThreshold();
     Combo mode;
+    ToggleBtn relative { "RELATIVE", theme::deess };
     Knob freq { "Freq", theme::deess }, thr { "Threshold", theme::deess }, range { "Range", theme::deess }, rel { "Release", theme::deess };
     GainReductionMeter grMeter { theme::deess, 24.0f };
     juce::Label grLabel;
+    int boundRelative = -1;
+};
+
+class PsePanel : public ModulePanel
+{
+public:
+    explicit PsePanel (LiveVoiceProcessor& p);
+    void resized() override;
+    void update();
+private:
+    LiveVoiceProcessor& proc;
+    PseKeyMeter keyMeter { proc };
+    Knob thr { "Threshold", theme::pse }, range { "Range", theme::pse }, attack { "Attack", theme::pse },
+         hold { "Hold", theme::pse }, release { "Release", theme::pse },
+         scHp { "Key HP", theme::pse }, scLp { "Key LP", theme::pse };
+};
+
+class CompPanel : public ModulePanel
+{
+public:
+    explicit CompPanel (LiveVoiceProcessor& p);
+    void resized() override;
+    void update();
+private:
+    LiveVoiceProcessor& proc;
+    ToggleBtn autoRel { "AUTO RELEASE", theme::comp };
+    Knob thr { "Threshold", theme::comp }, ratio { "Ratio", theme::comp }, knee { "Knee", theme::comp },
+         attack { "Attack", theme::comp }, release { "Release", theme::comp }, makeup { "Makeup", theme::comp },
+         mix { "Mix", theme::comp }, scHp { "Key HP", theme::comp };
+    GainReductionMeter grMeter { theme::comp, 18.0f };
+    juce::Label grLabel, grValue;
 };
 
 class HeaderBar : public juce::Component

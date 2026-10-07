@@ -166,6 +166,30 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
         v.push_back ({ dsRel, rel });
     };
 
+    auto pse = [] (V& v, bool on, float thr, float range, float hold, float rel, float hp, float lp)
+    {
+        v.push_back ({ params::pseOn, on ? 1.0f : 0.0f });
+        v.push_back ({ params::pseThr, thr });
+        v.push_back ({ params::pseRange, range });
+        v.push_back ({ params::pseHold, hold });
+        v.push_back ({ params::pseRelease, rel });
+        v.push_back ({ params::pseScHp, hp });
+        v.push_back ({ params::pseScLp, lp });
+    };
+    auto comp = [] (V& v, float thr, float ratio, float knee, float att, float rel, float makeup, float scHp)
+    {
+        v.push_back ({ params::compOn, 1.0f });
+        v.push_back ({ params::compThr, thr });
+        v.push_back ({ params::compRatio, ratio });
+        v.push_back ({ params::compKnee, knee });
+        v.push_back ({ params::compAttack, att });
+        v.push_back ({ params::compRelease, rel });
+        v.push_back ({ params::compAuto, 1.0f });
+        v.push_back ({ params::compMakeup, makeup });
+        v.push_back ({ params::compMix, 100.0f });
+        v.push_back ({ params::compScHp, scHp });
+    };
+
     std::vector<Factory> out;
 
     out.push_back ({ "Default", {} });
@@ -180,6 +204,9 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
         band (v, 4, true, 4500.0f, 0.0f, 2.0f);  dyn (v, 4, -32.0f, -4.0f, 3.0f, 3.0f, 100.0f);
         v.push_back ({ bType (5), 1.0f }); band (v, 5, true, 10000.0f, 1.0f, 0.7f);
         ds (v, true, 6500.0f, -32.0f, 6.0f, 0, 80.0f);
+        v.push_back ({ dsRelative, 1.0f }); v.push_back ({ dsRelThr, -10.0f });
+        pse (v, false, -48.0f, 8.0f, 150.0f, 400.0f, 150.0f, 8000.0f);
+        comp (v, -24.0f, 2.5f, 12.0f, 10.0f, 300.0f, 3.0f, 120.0f);
         out.push_back ({ "Pastor - Face Mic (Speech)", v });
     }
     { // Pulpit / lectern gooseneck
@@ -192,6 +219,9 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
         band (v, 4, false, 5000.0f, 0.0f, 2.0f);
         v.push_back ({ bType (5), 1.0f }); band (v, 5, false, 10000.0f, 0.0f, 0.7f);
         ds (v, true, 6000.0f, -30.0f, 6.0f, 0, 80.0f);
+        v.push_back ({ dsRelative, 1.0f }); v.push_back ({ dsRelThr, -10.0f });
+        pse (v, true, -45.0f, 12.0f, 200.0f, 500.0f, 150.0f, 8000.0f);   // pulls the lectern mic down when nobody is at it
+        comp (v, -24.0f, 3.0f, 12.0f, 10.0f, 300.0f, 4.0f, 120.0f);
         out.push_back ({ "Spoken Word - Lectern Mic", v });
     }
     { // Handheld male vocal: dynamic low-mid band tames proximity effect
@@ -204,6 +234,8 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
         band (v, 4, true, 5000.0f, 0.0f, 2.0f);  dyn (v, 4, -30.0f, -4.0f, 3.0f, 3.0f, 100.0f);
         v.push_back ({ bType (5), 1.0f }); band (v, 5, true, 12000.0f, 2.0f, 0.7f);
         ds (v, true, 5500.0f, -30.0f, 7.0f, 0, 80.0f);
+        pse (v, false, -42.0f, 10.0f, 100.0f, 300.0f, 150.0f, 8000.0f);
+        comp (v, -20.0f, 3.0f, 10.0f, 6.0f, 220.0f, 3.0f, 100.0f);
         out.push_back ({ "Male Vocal - Handheld", v });
     }
     { // Handheld female vocal
@@ -216,6 +248,8 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
         band (v, 4, true, 6000.0f, 0.0f, 2.0f);  dyn (v, 4, -30.0f, -4.0f, 3.0f, 3.0f, 100.0f);
         v.push_back ({ bType (5), 1.0f }); band (v, 5, true, 12000.0f, 2.0f, 0.7f);
         ds (v, true, 7500.0f, -30.0f, 7.0f, 0, 80.0f);
+        pse (v, false, -42.0f, 10.0f, 100.0f, 300.0f, 200.0f, 10000.0f);
+        comp (v, -20.0f, 3.0f, 10.0f, 6.0f, 220.0f, 3.0f, 120.0f);
         out.push_back ({ "Female Vocal - Handheld", v });
     }
     { // Worship leader who both speaks and sings
@@ -228,6 +262,9 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
         band (v, 4, true, 5000.0f, 0.0f, 2.0f);  dyn (v, 4, -30.0f, -4.0f, 3.0f, 3.0f, 100.0f);
         v.push_back ({ bType (5), 1.0f }); band (v, 5, true, 12000.0f, 1.5f, 0.7f);
         ds (v, true, 6500.0f, -30.0f, 6.0f, 0, 80.0f);
+        v.push_back ({ dsRelative, 1.0f }); v.push_back ({ dsRelThr, -10.0f });
+        pse (v, false, -45.0f, 10.0f, 120.0f, 350.0f, 150.0f, 8000.0f);
+        comp (v, -22.0f, 3.0f, 12.0f, 8.0f, 250.0f, 3.0f, 110.0f);
         out.push_back ({ "Worship Leader - Speak & Sing", v });
     }
 

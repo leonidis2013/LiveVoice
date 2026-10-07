@@ -158,7 +158,7 @@ namespace dsp
         const float sens = juce::jlimit (0.0f, 100.0f, sSens.load());
         const float sensOffset = (sens - 50.0f) / 50.0f * 6.0f;        // +-6 dB
         float thrShift = -sensOffset;
-        if (learn) { thrShift -= 3.0f; cfg.persistSeconds = 0.12f; cfg.minGrowthDb = -2.0f; cfg.maxDriftCents = 15.0f; }
+        if (learn) { thrShift -= 1.0f; cfg.persistSeconds = std::min (cfg.persistSeconds, 0.18f); cfg.minGrowthDb = std::min (cfg.minGrowthDb, -1.0f); }   // quicker, but just as picky
 
         const float framesPerSecond = (float) (fs / hop);
         const int persistFrames = std::max (2, (int) std::ceil (cfg.persistSeconds * framesPerSecond));
@@ -221,9 +221,12 @@ namespace dsp
             const float pnpr = peakDb - (float) (nSum / std::max (1, nCount));
             if (pnpr < cfg.pnpr + thrShift) continue;
 
-            // peak-to-harmonic: a sine has no partials above or below it
+            // peak-to-harmonic: a sine has no partials above or below it. Besides 2f, 3f, f/2, f/3,
+            // check the neighbouring members of a harmonic series (k+-1)/k: if this peak is the
+            // 3rd-6th harmonic of a voice, its neighbours sit at those ratios.
             float strongestRelative = -140.0f;
-            const float related[] { 2.0f, 3.0f, 0.5f, 1.0f / 3.0f };
+            const float related[] { 2.0f, 3.0f, 0.5f, 1.0f / 3.0f,
+                                    1.5f, 2.0f / 3.0f, 4.0f / 3.0f, 0.75f, 1.25f, 0.8f, 1.2f, 5.0f / 6.0f };
             for (float r : related)
             {
                 const float hb = binF * r;

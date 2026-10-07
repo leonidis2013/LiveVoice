@@ -83,7 +83,32 @@ namespace params
     inline const juce::String dsMode  { "dsMode" };
     inline const juce::String dsRel   { "dsRel" };
 
+    inline const juce::String dsRelative { "dsRelative" };    // relative detection on/off
+    inline const juce::String dsRelThr { "dsRelThr" };     // threshold used in relative mode
+
     enum class DsMode { split = 0, wideband };
+
+    // ---- PSE (primary source expander) ----
+    inline const juce::String pseOn      { "pseOn" };
+    inline const juce::String pseThr     { "pseThr" };
+    inline const juce::String pseRange   { "pseRange" };
+    inline const juce::String pseAttack  { "pseAttack" };
+    inline const juce::String pseHold    { "pseHold" };
+    inline const juce::String pseRelease { "pseRelease" };
+    inline const juce::String pseScHp    { "pseScHp" };
+    inline const juce::String pseScLp    { "pseScLp" };
+
+    // ---- vocal compressor ----
+    inline const juce::String compOn      { "compOn" };
+    inline const juce::String compThr     { "compThr" };
+    inline const juce::String compRatio   { "compRatio" };
+    inline const juce::String compKnee    { "compKnee" };
+    inline const juce::String compAttack  { "compAttack" };
+    inline const juce::String compRelease { "compRelease" };
+    inline const juce::String compAuto    { "compAutoRel" };
+    inline const juce::String compMakeup  { "compMakeup" };
+    inline const juce::String compMix     { "compMix" };
+    inline const juce::String compScHp    { "compScHp" };
 
     // -----------------------------------------------------------------------
     inline juce::NormalisableRange<float> freqRange (float lo, float hi)
@@ -189,8 +214,31 @@ namespace params
         addF (dsRange, "De-Ess Range", { 0.0f, 24.0f, 0.1f }, 8.0f, db);
         addC (dsMode,  "De-Ess Mode", { "Split", "Wideband" }, 0);
         addF (dsRel,   "De-Ess Release", timeRange (20.0f, 500.0f, 80.0f), 80.0f, ms);
+        addB (dsRelative,  "De-Ess Relative Detection", false);
+        addF (dsRelThr, "De-Ess Relative Threshold", { -30.0f, 6.0f, 0.1f }, -10.0f, db);
 
-        juce::ignoreUnused (pct);
+        // PSE
+        addB (pseOn,      "PSE On", false);
+        addF (pseThr,     "PSE Threshold", { -80.0f, 0.0f, 0.1f }, -45.0f, db);
+        addF (pseRange,   "PSE Range", { 0.0f, 40.0f, 0.1f }, 12.0f, db);
+        addF (pseAttack,  "PSE Attack", timeRange (0.1f, 20.0f, 2.0f), 1.0f, ms);
+        addF (pseHold,    "PSE Hold", timeRange (0.0f, 500.0f, 100.0f), 80.0f, ms);
+        addF (pseRelease, "PSE Release", timeRange (20.0f, 2000.0f, 300.0f), 300.0f, ms);
+        addF (pseScHp,    "PSE Sidechain HP", freqRange (20.0f, 1000.0f), 150.0f, hz);
+        addF (pseScLp,    "PSE Sidechain LP", freqRange (1000.0f, 20000.0f), 8000.0f, hz);
+
+        // Vocal compressor
+        addB (compOn,      "Comp On", false);
+        addF (compThr,     "Comp Threshold", { -50.0f, 0.0f, 0.1f }, -20.0f, db);
+        addF (compRatio,   "Comp Ratio", timeRange (1.0f, 10.0f, 3.0f), 3.0f, rat);
+        addF (compKnee,    "Comp Knee", { 0.0f, 18.0f, 0.1f }, 10.0f, db);
+        addF (compAttack,  "Comp Attack", timeRange (0.3f, 50.0f, 8.0f), 8.0f, ms);
+        addF (compRelease, "Comp Release", timeRange (30.0f, 1500.0f, 250.0f), 250.0f, ms);
+        addB (compAuto,    "Comp Auto Release", true);
+        addF (compMakeup,  "Comp Makeup", { 0.0f, 24.0f, 0.1f }, 0.0f, db);
+        addF (compMix,     "Comp Mix", { 0.0f, 100.0f, 1.0f }, 100.0f, pct);
+        addF (compScHp,    "Comp Sidechain HP", freqRange (20.0f, 300.0f), 100.0f, hz);
+
         return layout;
     }
 }

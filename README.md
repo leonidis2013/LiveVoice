@@ -7,7 +7,9 @@ Everything in the audio path is zero latency (the plugin reports 0 samples to th
 
 ## What's in it
 
-**Signal flow:** Input trim → Feedback notches → 6-band Dynamic EQ → De-esser → Output trim → Safety limiter
+**Signal flow** (the bottom panels are laid out in this order, left to right):
+
+Input trim → **PSE** → **Feedback notches** → **6-band Dynamic EQ** → **De-esser** → **Compressor** → Output trim → Safety limiter
 
 | Section | What it does |
 |---|---|
@@ -15,7 +17,9 @@ Everything in the audio path is zero latency (the plugin reports 0 samples to th
 | **De-ess histogram** (middle strip) | Scrolling ~5 s history of sibilance level (violet). Bars turn bright and pink reduction hangs from the top whenever the de-esser is working. Dashed line = threshold. |
 | **Feedback suppression** | Automatic detection + narrow notches. Modes: **Speech**, **Singing**, **Multipurpose**. |
 | **Dynamic EQ** | 6 bands. Band 1: Bell / Low Shelf / HP 12 / HP 24. Band 6: Bell / High Shelf / LP 12 / LP 24. Any bell or shelf can be made dynamic (threshold, range ±18 dB, ratio, attack, release). |
-| **De-esser** | Split (reduces only the highs) or Wideband. Freq 2–12 kHz, threshold, range, release. |
+| **PSE** (Primary Source Expander) | Smoothly turns the mic down between phrases: less stage bleed and room pickup, and less chance of feedback building while the mic is idle. Threshold, range, attack, hold, release, key HP/LP filters, open/closed lamp and key-level meter. |
+| **De-esser** | Split (reduces only the highs) or Wideband. Freq 2–12 kHz, threshold, range, release. **RELATIVE** button switches between absolute detection (fixed level) and relative detection (sibilance compared with the whole voice). |
+| **Compressor** | Transparent, smooth vocal compressor at the output: RMS detection, soft knee, key high-pass, dB-domain smoothing, opto-style **AUTO RELEASE**, makeup and parallel mix. |
 | **Header** | Presets, input/output trim with meters, safety limiter + ceiling, bypass. |
 
 ### Using the RTA directly
@@ -39,15 +43,27 @@ Everything in the audio path is zero latency (the plugin reports 0 samples to th
 
 **Limits that keep it safe:** Fixed Max / Floating Max (up to 12 each), Max Depth (−3 to −30 dB), notch width (1/5 to 1/40 octave, default 1/20), and a Low/High detection range (default 150 Hz – 10 kHz, so the warmth of the voice is never notched).
 
+### Gain before feedback readout
+The tile in the Feedback panel shows how much gain the ring-out bought you. While **Learn** is on, LiveVoice notes its own gain (INPUT + OUTPUT + compressor makeup) at the **first ring**, then the **highest gain that held for 4 s without a new ring**. The difference is the readout (e.g. "+6.5 dB"). It stays after you switch Learn off, is saved with the session, and starts fresh the next time you turn Learn on.
+
+Important: the plugin can only see its own gain. **During ring-out, raise the gain with LiveVoice's INPUT or OUTPUT, not the console fader**, then bring it back to service level afterwards.
+
+## PSE — setting it up
+Watch the key-level bar while the pastor talks: set **Threshold** just under the softest speech (the white mark), with **Range** 6–12 dB for a natural result. The thin grey mark is where it starts closing (4 dB of hysteresis), and **Hold** keeps it open through short gaps between words. Key HP/LP decide what the PSE listens to (default 150 Hz–8 kHz ignores rumble and cymbals). The bar keeps working with PSE off, so you can set the threshold before switching it on.
+
+## Compressor — why it's built this way
+Aimed at "you don't hear it working": an RMS detector reacts to loudness rather than spikes; a key high-pass (default 100 Hz) stops plosives and proximity boom pumping the voice; a wide soft knee eases in; gain changes are smoothed in the dB domain (the cleanest approach); and AUTO RELEASE behaves like an optical compressor — quick recovery after a short peak, slower and gentler after sustained compression. Starting point: threshold so you see 3–6 dB GR on normal speech, 2.5–3:1, auto release on, makeup to match.
+Note: makeup gain raises the channel's gain between words too, so it counts toward feedback just like a fader move.
+
 ## Presets
 
-Factory: *Default, Pastor – Face Mic (Speech), Spoken Word – Lectern Mic, Male Vocal – Handheld, Female Vocal – Handheld, Worship Leader – Speak & Sing.* They are starting points to adjust at soundcheck.
+Factory: *Default, Pastor – Face Mic (Speech), Spoken Word – Lectern Mic, Male Vocal – Handheld, Female Vocal – Handheld, Worship Leader – Speak & Sing.* They are starting points to adjust at soundcheck. All of them except Default switch the compressor on; the speech presets use relative de-essing; PSE is switched on only in the Lectern preset (where nobody may be standing at the mic) and set up but off in the others.
 
 **SAVE** captures your own presets (they appear under *My presets*; **DELETE** removes one). Files live in:
 - Windows: `%APPDATA%\LiveVoice\Presets`
 - macOS: `~/Library/Application Support/LiveVoice/Presets`
 
-A preset stores the **voice settings** (feedback behaviour, dynamic EQ, de-esser). It deliberately does **not** change input/output gain, the limiter, bypass, Learn/Freeze, or your learned notches — so switching presets mid-service never changes gain staging or forgets the ring-out.
+A preset stores the **voice settings** (PSE, feedback behaviour, dynamic EQ, de-esser, compressor). It deliberately does **not** change input/output gain, the limiter, bypass, Learn/Freeze, or your learned notches — so switching presets mid-service never changes gain staging or forgets the ring-out.
 
 ## Building
 
@@ -76,11 +92,12 @@ cmake -S . -B build -DLIVEVOICE_BUILD_TESTS=ON
 cmake --build build --target LiveVoiceTests --config Release
 build/Tests/LiveVoiceTests_artefacts/Release/LiveVoiceTests
 ```
-The suite checks: zero latency (impulse comes out at sample 0), dynamic-EQ and de-esser behaviour, the limiter ceiling, that the drawn EQ curve matches the audio, preset save/load/delete, a simulated **closed mic→speaker→room loop** that really howls without the plugin (suppression brings it down by roughly 28–37 dB depending on mode), false detections on 30 s of synthetic speech and singing, ring-out Learn + session recall, floating-notch release, and CPU use (~6% of one core including the test-signal synthesis).
+The suite (63 checks) covers: zero latency with every module on (impulse comes out at sample 0); dynamic-EQ, de-esser (absolute and relative), PSE and compressor behaviour (ratio accuracy, soft knee, 0.008 dB gain ripple on a held 150 Hz note, auto release recovering in 175 ms after a short peak vs 840 ms after sustained compression, parallel mix); the limiter ceiling; the drawn EQ curve matching the audio; preset save/load/delete; a simulated **closed mic→speaker→room loop** that really howls without the plugin (suppression brings it down by roughly 28–37 dB depending on mode); zero false detections on 30 s of synthetic speech and singing in every mode and on 20 s of talking during Learn; ring-out Learn + session recall; floating-notch release; the gain-before-feedback readout; and CPU use (~7% of one core with everything on, including test-signal synthesis).
 
 ## Honest limitations
 
 - **No look-ahead anywhere** (that's the cost of 0 ms). The safety limiter therefore has an instant attack and a hard ceiling; on extreme overs it will clip a little rather than let anything through. It's a safety net, not a mastering limiter.
+- The PSE has no look-ahead either; it opens within about 1 ms, which is inaudible on speech, but a very soft first consonant below the threshold can be slightly softened — set the threshold a little low rather than high.
 - A notch can only be placed after a ring is detected (typically ~0.1–0.3 s). Ring-out with Learn first; live suppression is the backup, not a substitute for good gain structure and mic placement.
 - Detection was tuned on simulated voices and rooms. Expect to adjust Sensitivity in your room — raise it if rings get through, lower it if it notches the voice.
 
@@ -93,7 +110,9 @@ Source/dsp/Svf.h                zero-latency state-variable filters + exact resp
 Source/dsp/FeedbackDetector.*   background FFT detector
 Source/dsp/FeedbackSuppressor.* notch bank (fixed / floating)
 Source/dsp/DynamicEq.h          6-band dynamic EQ
-Source/dsp/DeEsser.h            de-esser + histogram history
+Source/dsp/DeEsser.h            de-esser (absolute/relative) + histogram history
+Source/dsp/PrimarySourceExpander.h  PSE
+Source/dsp/VocalCompressor.h    output compressor
 Source/dsp/SafetyLimiter.h      output protection
 Source/ui/*                     dark single-page UI
 Tests/TestMain.cpp              offline tests + UI snapshot tool
