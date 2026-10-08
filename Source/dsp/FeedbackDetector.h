@@ -45,6 +45,10 @@ namespace dsp
         float getLastDetectionFreq() const noexcept { return lastDetectFreq.load(); }
         int getDetectionCount() const noexcept { return detectCount.load(); }
 
+        // Feedback log: one event per detection (detector thread -> message thread).
+        struct LogEvent { float freq = 0.0f; bool fixed = false; };
+        bool popLogEvent (LogEvent& e) noexcept { return logQueue.pop (e); }
+
         // For offline tests: run analysis synchronously instead of on the thread.
         void processPendingForTest();
         void stopThreadForTest() { stopThread (2000); }
@@ -81,6 +85,7 @@ namespace dsp
         std::atomic<int> sMode { 0 };
         std::atomic<float> sSens { 50.0f }, sLo { 150.0f }, sHi { 10000.0f };
 
+        LockFreeQueue<LogEvent, 256> logQueue;
         std::atomic<float> lastDetectFreq { 0.0f };
         std::atomic<int> detectCount { 0 };
         std::atomic<bool> prepared { false };

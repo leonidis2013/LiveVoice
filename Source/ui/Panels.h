@@ -3,6 +3,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "../PluginProcessor.h"
 #include "Theme.h"
+#include "../dsp/VoiceAnalysis.h"
 
 using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
 using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
@@ -84,22 +85,27 @@ protected:
 };
 
 // ---------------------------------------------------------------- history strips
-// Scrolling history: level bars from the bottom, gain reduction hanging from the
-// top, threshold line, and dB scales on both sides.
+// Scrolling history over 10 / 25 / 60 s (click the span label to change it).
+//   De-ess:     sibilance level bars, pink reduction hanging from the top, threshold.
+//   Compressor: input level (grey), compressed level (amber), makeup stacked on top (teal).
 class HistoryStrip : public juce::Component
 {
 public:
     explicit HistoryStrip (LiveVoiceProcessor& p) : proc (p) { setOpaque (true); }
     void update();
     void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    std::function<void()> onSpanChanged;
+
+    static constexpr int spanSeconds[] { 10, 25, 60 };
 
 protected:
     struct Config
     {
         juce::String title, thresholdText;
         const juce::Colour* accent = nullptr;
-        bool on = true;
-        float lo = -60.0f, hi = 0.0f, threshold = -30.0f, grMax = 12.0f, currentGr = 0.0f;
+        bool on = true, stacked = false;
+        float lo = -60.0f, hi = 0.0f, threshold = -30.0f, grMax = 12.0f, makeup = 0.0f;
     };
     virtual Config getConfig() = 0;
     virtual void readPoints (dsp::LevelHistory::Point* dest, int count) = 0;
@@ -107,7 +113,8 @@ protected:
     LiveVoiceProcessor& proc;
 
 private:
-    std::vector<dsp::LevelHistory::Point> points;
+    std::vector<dsp::LevelHistory::Point> rawCols, points;
+    juce::Rectangle<float> spanArea;
 };
 
 class DeEssHistory : public HistoryStrip
@@ -126,6 +133,19 @@ public:
 protected:
     Config getConfig() override;
     void readPoints (dsp::LevelHistory::Point* d, int n) override { proc.comp.readHistory (d, n); }
+};
+
+// Compressor level meter: input (grey) beside compressed level (amber) with the
+// makeup gain stacked on top in teal, on one dB scale.
+class CompLevelMeter : public juce::Component
+{
+public:
+    explicit CompLevelMeter (LiveVoiceProcessor& p) : proc (p) {}
+    void update();
+    void paint (juce::Graphics&) override;
+private:
+    LiveVoiceProcessor& proc;
+    float in = -100.0f, gr = 0.0f, makeup = 0.0f;
 };
 
 // Compressor transfer curve with a live dot for the current input level.
@@ -149,7 +169,8 @@ public:
     void paint (juce::Graphics&) override;
 private:
     LiveVoiceProcessor& proc;
-    float key = -100.0f;
+    float key = -100.0f, paintedKey = 1000.0f, paintedGr = 1000.0f;
+    int paintedState = -1;
 };
 
 // Dynamic EQ activity for the selected band: detector level vs threshold, and
@@ -158,13 +179,13 @@ class DynActivity : public juce::Component
 {
 public:
     explicit DynActivity (LiveVoiceProcessor& p) : proc (p) {}
-    void setBand (int b) { band = b; repaint(); }
+    void setBand (int b) { band = b; paintedLevel = 1000.0f; repaint(); }
     void update();
     void paint (juce::Graphics&) override;
 private:
     LiveVoiceProcessor& proc;
     int band = 0;
-    float level = -100.0f, gain = 0.0f;
+    float level = -100.0f, gain = 0.0f, paintedLevel = 1000.0f, paintedGain = 1000.0f;
 };
 
 // ---------------------------------------------------------------- panels
@@ -179,7 +200,8 @@ private:
     LiveVoiceProcessor& proc;
     Combo mode, width;
     ToggleBtn learn { "RING-OUT LEARN", theme::feedback }, freeze { "FREEZE", theme::warn };
-    juce::TextButton clearFloat { "CLEAR FLOATING" }, clearAll { "CLEAR ALL" };
+    juce::TextButton clearFloat { "CLEAR FLOATING" }, clearAll { "CLEAR ALL" }, logBtn { "LOG" };
+    void showLog();
     Knob sens { "Sensitivity", theme::feedback }, depth { "Max Depth", theme::feedback }, hold { "Float Hold", theme::feedback },
          maxFixed { "Fixed Max", theme::feedback }, maxFloat { "Floating Max", theme::feedback },
          lo { "Low Limit", theme::feedback }, hi { "High Limit", theme::feedback };
@@ -205,6 +227,9 @@ private:
          thr { "Threshold", theme::eq }, range { "Range", theme::eq }, ratio { "Ratio", theme::eq },
          attack { "Attack", theme::eq }, release { "Release", theme::eq };
     DynActivity activity { proc };
+    juce::TextButton suggest { "SUGGEST" };
+    juce::Label statusLbl;
+    void runSuggestion();
 };
 
 class DeEssPanel : public ModulePanel
@@ -222,8 +247,10 @@ private:
     Knob freq { "Freq", theme::deess }, width { "Width (Q)", theme::deess }, thr { "Threshold", theme::deess },
          range { "Range", theme::deess }, rel { "Release", theme::deess };
     GainReductionMeter grMeter { theme::deess, 24.0f };
-    juce::Label grLabel, grValue;
+    juce::Label grLabel, grValue, status;
+    juce::TextButton suggest { "SUGGEST" };
     int boundRelative = -1;
+    void runSuggestion();
 };
 
 class PsePanel : public ModulePanel
@@ -252,8 +279,7 @@ private:
     Knob thr { "Threshold", theme::comp }, ratio { "Ratio", theme::comp }, knee { "Knee", theme::comp },
          attack { "Attack", theme::comp }, release { "Release", theme::comp }, makeup { "Makeup", theme::comp },
          mix { "Mix", theme::comp }, scHp { "Key HP", theme::comp };
-    GainReductionMeter grMeter { theme::comp, 18.0f };
-    juce::Label grLabel, grValue;
+    CompLevelMeter levelMeter { proc };
 };
 
 class HeaderBar : public juce::Component
@@ -265,6 +291,9 @@ public:
     void update();
     void refreshPresetList();
     std::function<void()> onThemeToggle;
+    std::function<void (float)> onZoom;      // +/- step, or 0 = fit to screen
+    std::function<void()> onGpuToggle;
+    std::function<bool()> isGpuOn;
 
 private:
     void presetChosen();
@@ -274,12 +303,13 @@ private:
     LiveVoiceProcessor& proc;
     juce::ComboBox presetBox;
     juce::TextButton saveBtn { "SAVE" }, deleteBtn { "DELETE" };
-    juce::TextButton soloWarning { "SOLO ON - CLICK TO CLEAR" };
+    juce::TextButton undoBtn { "UNDO" }, redoBtn { "REDO" }, slotA { "A" }, slotB { "B" }, copyBtn { "A>B" };
+    juce::TextButton zoomOut { "-" }, zoomFit { "FIT" }, zoomIn { "+" }, settingsBtn { "..." }, monitorBtn { "MON A/B" };
+    void showSettingsMenu();
     Knob inGain { "INPUT", theme::output }, outGain { "OUTPUT", theme::output }, ceiling { "CEILING", theme::danger };
     ToggleBtn limit { "LIMIT", theme::danger }, bypass { "BYPASS", theme::warn }, lightBtn { "LIGHT", theme::text };
     GainReductionMeter limMeter { theme::danger, 12.0f };
     juce::StringArray userNames;
     std::unique_ptr<juce::AlertWindow> dialog;
     bool updatingList = false;
-    int flash = 0;
 };

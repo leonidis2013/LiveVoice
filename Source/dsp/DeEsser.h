@@ -12,7 +12,8 @@
 //   Shelf mode: high-pass sidechain, dynamic high shelf (all highs).
 //   Wideband mode: high-pass sidechain, whole signal ducks.
 // Detection is absolute (band level in dBFS) or relative (band level compared
-// with the whole voice). Listen (solo) outputs exactly what the detector hears.
+// with the whole voice). Listen (solo) writes exactly what the detector hears into a
+// separate buffer, so the main output is never affected by soloing.
 namespace dsp
 {
     class DeEsser
@@ -20,14 +21,14 @@ namespace dsp
     public:
         static constexpr int maxChannels = 2;
         static constexpr int controlInterval = 16;
-        static constexpr int historyColumnMs = 30;    // slower scroll: ~20 s across the strip
+        static constexpr int historyColumnMs = 25;    // the UI groups columns to show 10 / 25 / 60 s
         static constexpr float relativeGateDb = -60.0f;   // no reduction on near-silence
 
         enum Mode { band = 0, shelf, wideband };
 
         struct Settings
         {
-            bool on = true, relative = false, listen = false;
+            bool on = true, relative = false;
             int mode = band;
             float freq = 6500.0f, q = 3.0f, thresholdDb = -30.0f, rangeDb = 8.0f, releaseMs = 80.0f;
             float relThresholdDb = -18.0f;     // sibilance band minus full band, in dB
@@ -66,7 +67,8 @@ namespace dsp
             return (float) c.magnitudeDb (freq, sampleRate);
         }
 
-        void process (juce::AudioBuffer<float>& buffer, int numSamples) noexcept
+        // listenOut: optional buffer (same channel count) that receives the sidechain band for solo.
+        void process (juce::AudioBuffer<float>& buffer, int numSamples, juce::AudioBuffer<float>* listenOut = nullptr) noexcept
         {
             const int nCh = std::min (channels, buffer.getNumChannels());
             auto* L = buffer.getWritePointer (0);
@@ -83,7 +85,8 @@ namespace dsp
             const float att = timeCoeff (0.5f, fs);
             const float rel = timeCoeff (settings.releaseMs, fs);
             const float grSmooth = std::exp (-1.0f / (0.0005f * (float) (fs / controlInterval)));
-            const bool listen = settings.listen;
+            float* lisL = listenOut != nullptr ? listenOut->getWritePointer (0) : nullptr;
+            float* lisR = (listenOut != nullptr && R != nullptr && listenOut->getNumChannels() > 1) ? listenOut->getWritePointer (1) : nullptr;
 
             for (int i = 0; i < numSamples; ++i)
             {
@@ -130,13 +133,14 @@ namespace dsp
                 }
                 counter = (counter + 1) % controlInterval;
 
-                if (listen)
+                if (lisL != nullptr)
                 {
-                    // solo: hear the sibilance band exactly as the detector does
-                    l = listenState[0].process (l, detCoeffs);
-                    if (R != nullptr) r = listenState[1].process (r, detCoeffs);
+                    // solo: the sibilance band exactly as the detector hears it (pre-reduction)
+                    lisL[i] = listenState[0].process (l, detCoeffs);
+                    if (lisR != nullptr) lisR[i] = listenState[1].process (r, detCoeffs);
                 }
-                else if (settings.on)
+
+                if (settings.on)
                 {
                     if (settings.mode == wideband)
                     {

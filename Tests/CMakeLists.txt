@@ -6,6 +6,7 @@ target_sources(LiveVoiceTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Source/PluginProcessor.cpp
     ${CMAKE_SOURCE_DIR}/Source/PluginEditor.cpp
     ${CMAKE_SOURCE_DIR}/Source/PresetManager.cpp
+    ${CMAKE_SOURCE_DIR}/Source/dsp/VoiceAnalysis.cpp
     ${CMAKE_SOURCE_DIR}/Source/dsp/FeedbackSuppressor.cpp
     ${CMAKE_SOURCE_DIR}/Source/dsp/FeedbackDetector.cpp
     ${CMAKE_SOURCE_DIR}/Source/ui/RtaDisplay.cpp
@@ -15,6 +16,7 @@ target_include_directories(LiveVoiceTests PRIVATE ${CMAKE_SOURCE_DIR}/Source)
 
 target_compile_definitions(LiveVoiceTests PRIVATE
     JucePlugin_Name="LiveVoice"
+    LIVEVOICE_VERSION="${PROJECT_VERSION}"
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_MODAL_LOOPS_PERMITTED=1)

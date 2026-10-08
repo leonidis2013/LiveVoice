@@ -4,8 +4,12 @@
 #include <juce_dsp/juce_dsp.h>
 #include "../PluginProcessor.h"
 
-// Top display: input/output RTA, dynamic EQ curve with draggable band
-// handles, and the feedback notch curve with notch markers.
+// Top display: input (grey fill) / output (blue fill) RTA, dynamic EQ curve with
+// draggable band handles, feedback notch curve with markers, and the de-esser band.
+//
+// Drawing is cached: the grid/labels live in an image that is rebuilt only on
+// resize or theme change, and the EQ / notch curves are recomputed only when a
+// setting or a dynamic gain actually changes.
 class RtaDisplay : public juce::Component
 {
 public:
@@ -13,6 +17,7 @@ public:
 
     void update();                      // called by the editor's timer
     void setSelectedBand (int b)        { selectedBand = b; repaint(); }
+    void invalidateCaches()             { gridDirty = true; eqDirty = true; notchDirty = true; repaint(); }
     std::function<void (int)> onBandSelected;
 
     void paint (juce::Graphics&) override;
@@ -37,16 +42,17 @@ private:
     float eqDbForY (float y) const;
 
     void computeSpectrum (ScopeTap& tap, std::vector<float>& columns);
-    float bandEqDb (int band, double freq, bool includeDynamic) const;
+    void bandResponse (int band, bool includeDynamic, std::vector<float>& out) const;
+    void refreshCurves();
     juce::Point<float> handlePosition (int band) const;
     int hitBand (juce::Point<float> pos) const;
     int hitNotch (juce::Point<float> pos) const;
     juce::RangedAudioParameter* param (const juce::String& id) const;
     params::BandType bandType (int band) const;
     void setParam (const juce::String& id, float realValue);
+    void updateButtons();
 
-    void drawGrid (juce::Graphics&);
-    void drawCurves (juce::Graphics&);
+    void renderGrid();
     void drawDeEss (juce::Graphics&);
     void drawNotchMarkers (juce::Graphics&);
     void drawHandles (juce::Graphics&);
@@ -56,13 +62,29 @@ private:
 
     static constexpr int fftOrder = 13, fftSize = 1 << fftOrder;
     juce::dsp::FFT fft { fftOrder };
-    std::vector<float> window, fftBuffer, binDb;
-    std::vector<float> inCols, outCols;
+    std::vector<float> window, fftBuffer, binMag;
+    std::vector<float> inCols, outCols;       // one per 2 px column
+
+    // cached curves (dB at curveFreqs)
+    std::vector<float> curveFreqs, curveX;
+    std::array<std::vector<float>, params::numEqBands> bandStatic, bandLive;
+    std::array<std::vector<float>, params::numEqBands> bandSig;   // params each band was computed with
+    std::array<float, params::numEqBands> bandLiveGain {};
+    std::vector<float> eqStatic, eqLive, notchCurve;
+    std::vector<float> lastNotchSig;
+    bool eqDirty = true, notchDirty = true, eqWasOn = false, fbWasOn = false;
+    float lastNotchQ = 0.0f;
+
+    juce::Image gridImage;
+    bool gridDirty = true;
 
     std::array<dsp::FeedbackSuppressor::NotchInfo, dsp::FeedbackSuppressor::maxSlots> notches;
     std::array<float, params::numEqBands> dynGain {};
 
+    juce::TextButton viewIn { "IN" }, viewOut { "OUT" }, viewBoth { "BOTH" }, smoothBtn { "1/6 oct" }, tiltBtn { "TILT" };
+    juce::TextButton soloBanner;
+
     int selectedBand = 0, dragBand = -1, hoverBand = -1, hoverNotch = -1;
-    int lastDetectCount = 0;
+    int lastDetectCount = 0, soloFlash = 0;
     float detectFlash = 0.0f, detectFreq = 0.0f;
 };

@@ -2,6 +2,7 @@
 //                                    LiveVoiceTests --snapshot out.png
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "dsp/VoiceAnalysis.h"
 #include <random>
 
 using namespace params;
@@ -24,9 +25,14 @@ namespace
         juce::AudioBuffer<float> buf { 1, blockSize };
         juce::MidiBuffer midi;
 
-        Harness()
+        explicit Harness (bool withMonitor = false)
         {
-            p.setPlayConfigDetails (1, 1, fs, blockSize);
+            juce::AudioProcessor::BusesLayout l;
+            l.inputBuses.add (juce::AudioChannelSet::mono());
+            l.outputBuses.add (juce::AudioChannelSet::mono());
+            l.outputBuses.add (withMonitor ? juce::AudioChannelSet::mono() : juce::AudioChannelSet::disabled());
+            p.setBusesLayout (l);
+            p.setRateAndBufferSizeDetails (fs, blockSize);
             p.prepareToPlay (fs, blockSize);
             p.detector.stopThreadForTest();     // run detection synchronously, deterministically
         }
@@ -391,22 +397,22 @@ static void testDynamicEq()
 
 static void testSolo()
 {
-    std::cout << "\nSolo / listen" << std::endl;
+    std::cout << "\nSolo / listen (fallback: solo to main output)" << std::endl;
     auto level = [] (Harness& h, double freq)
     {
         return sineChange (h, freq, -12.0f, 0.5);
     };
     double in450, out3k, ds7k, ds300;
     {
-        Harness h; h.allModulesOff(); h.set (eqOn, 1); h.p.soloTarget = 2;   // band 3 = 450 Hz box band
+        Harness h; h.allModulesOff(); h.set (eqOn, 1); h.p.soloToMain = true; h.p.soloTarget = 2;   // band 3 = 450 Hz box band
         in450 = level (h, 450.0);
     }
     {
-        Harness h; h.allModulesOff(); h.set (eqOn, 1); h.p.soloTarget = 2;
+        Harness h; h.allModulesOff(); h.set (eqOn, 1); h.p.soloToMain = true; h.p.soloTarget = 2;
         out3k = level (h, 3000.0);
     }
-    { Harness h; h.allModulesOff(); h.set (dsFreq, 7000.0f); h.p.soloTarget = LiveVoiceProcessor::soloDeEss; ds7k = level (h, 7000.0); }
-    { Harness h; h.allModulesOff(); h.set (dsFreq, 7000.0f); h.p.soloTarget = LiveVoiceProcessor::soloDeEss; ds300 = level (h, 300.0); }
+    { Harness h; h.allModulesOff(); h.set (dsFreq, 7000.0f); h.p.soloToMain = true; h.p.soloTarget = LiveVoiceProcessor::soloDeEss; ds7k = level (h, 7000.0); }
+    { Harness h; h.allModulesOff(); h.set (dsFreq, 7000.0f); h.p.soloToMain = true; h.p.soloTarget = LiveVoiceProcessor::soloDeEss; ds300 = level (h, 300.0); }
     std::cout << "  EQ band 3 solo: 450 Hz " << juce::String (in450, 1) << " dB, 3 kHz " << juce::String (out3k, 1)
               << " dB;  de-ess solo (7 kHz): 7 kHz " << juce::String (ds7k, 1) << " dB, 300 Hz " << juce::String (ds300, 1) << " dB" << std::endl;
     check (std::abs (in450) < 0.5 && out3k < -15.0, "EQ solo passes only the band's region");
@@ -416,6 +422,164 @@ static void testSolo()
     juce::MemoryBlock state; h.p.getStateInformation (state);
     Harness h2; h2.p.setStateInformation (state.getData(), (int) state.getSize());
     check (h2.p.soloTarget.load() == LiveVoiceProcessor::soloNone, "solo is never recalled with a session");
+}
+
+// Runs a 2-channel buffer (ch0 = main in/out, ch1 = monitor out); returns { main, monitor }.
+static std::pair<std::vector<float>, std::vector<float>> runWithMonitor (Harness& h, const std::function<float (int64_t)>& input, double seconds)
+{
+    const int64_t total = (int64_t) (seconds * fs);
+    std::vector<float> mainOut ((size_t) total), monOut ((size_t) total);
+    juce::AudioBuffer<float> b (2, blockSize);
+    for (int64_t start = 0; start < total; start += blockSize)
+    {
+        const int n = (int) std::min<int64_t> (blockSize, total - start);
+        b.setSize (2, n, false, false, true);
+        b.clear();
+        for (int i = 0; i < n; ++i) b.setSample (0, i, input (start + i));
+        h.p.processBlock (b, h.midi);
+        for (int i = 0; i < n; ++i) { mainOut[(size_t) (start + i)] = b.getSample (0, i); monOut[(size_t) (start + i)] = b.getSample (1, i); }
+    }
+    return { mainOut, monOut };
+}
+
+static void testMonitorBus()
+{
+    std::cout << "\nMonitor output (solo in place, FOH untouched)" << std::endl;
+    auto twoTones = [] (int64_t n)
+    {
+        const double t = (double) n / fs;
+        return 0.2f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 450.0 * t)
+             + 0.2f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 3000.0 * t);
+    };
+    auto setup = [] (Harness& h) { h.allModulesOff(); h.set (eqOn, 1); h.set (bGain (2), -4.0f); };
+
+    Harness ref (true); setup (ref);
+    const auto [refMain, refMon] = runWithMonitor (ref, twoTones, 1.0);
+    check (ref.p.isMonitorBusActive(), "plugin exposes a Monitor output bus");
+
+    Harness h (true); setup (h); h.p.soloTarget = 2;   // solo band 3 (450 Hz)
+    const auto [main, mon] = runWithMonitor (h, twoTones, 1.0);
+    double maxDiff = 0.0;
+    for (size_t i = 0; i < main.size(); ++i) maxDiff = std::max (maxDiff, (double) std::abs (main[i] - refMain[i]));
+    const size_t a = main.size() - 9600, e = main.size();
+    const double mon450 = toneDb (mon, a, e, 450.0), mon3k = toneDb (mon, a, e, 3000.0);
+    const double main450 = toneDb (main, a, e, 450.0), main3k = toneDb (main, a, e, 3000.0);
+    std::cout << "  soloing band 3: FOH max difference " << juce::String (maxDiff, 7) << ";  monitor 450 Hz " << juce::String (mon450, 1)
+              << " dB, 3 kHz " << juce::String (mon3k, 1) << " dB;  FOH 450 Hz " << juce::String (main450, 1) << " dB, 3 kHz " << juce::String (main3k, 1) << " dB" << std::endl;
+    check (maxDiff < 1.0e-6, "FOH output is bit-identical while soloing on the monitor");
+    check (mon450 - mon3k > 15.0, "monitor carries only the soloed band");
+
+    Harness d (true); setup (d); d.p.monitorDry = true;
+    const auto [dMain, dMon] = runWithMonitor (d, twoTones, 0.5);
+    double dryDiff = 0.0, fxDiff = 0.0;
+    for (size_t i = 0; i < dMon.size(); ++i) { dryDiff = std::max (dryDiff, (double) std::abs (dMon[i] - twoTones ((int64_t) i))); fxDiff = std::max (fxDiff, (double) std::abs (dMain[i] - refMain[i])); }
+    std::cout << "  monitor A/B on DRY: monitor vs input max diff " << juce::String (dryDiff, 7) << ", FOH change " << juce::String (fxDiff, 7) << std::endl;
+    check (dryDiff < 1.0e-6 && fxDiff < 1.0e-6, "monitor A/B plays the untouched input while FOH stays processed");
+
+    Harness f (true); setup (f);
+    const auto [fMain, fMon] = runWithMonitor (f, twoTones, 0.5);
+    double follow = 0.0;
+    for (size_t i = 0; i < fMon.size(); ++i) follow = std::max (follow, (double) std::abs (fMon[i] - fMain[i]));
+    check (follow < 1.0e-6, "with nothing soloed the monitor follows FOH");
+}
+
+static void testSuggest()
+{
+    std::cout << "\nSuggest (de-esser and EQ assistants)" << std::endl;
+    // de-esser: the synthetic talker's "s" bursts are centred at 7 kHz
+    {
+        Voice v (120.0, false, -18.0f);
+        std::vector<float> x ((size_t) fs * 20);
+        for (size_t i = 0; i < x.size(); ++i) x[i] = v ((int64_t) i);
+        const auto s = dsp::analysis::suggestDeEss (x.data(), (int) x.size(), fs);
+        std::cout << "  de-ess: " << s.sibilantFrames << " sibilant frames -> " << juce::String (s.freq, 0) << " Hz, Q "
+                  << juce::String (s.q, 2) << ", thr " << juce::String (s.thresholdDb, 1) << " dB / rel " << juce::String (s.relThresholdDb, 1) << " dB" << std::endl;
+        check (s.ok && std::abs (std::log2 (s.freq / 7000.0f)) < 1.0f / 3.0f, "finds the sibilance frequency (within 1/3 octave of 7 kHz)");
+
+        // and the suggested settings actually de-ess this voice by a sensible amount
+        Harness h; h.allModulesOff(); h.set (dsOn, 1); h.set (dsMode, 0.0f); h.set (dsFreq, s.freq); h.set (dsQ, s.q); h.set (dsThr, s.thresholdDb);
+        float maxGr = 0.0f;
+        for (size_t start = 0; start + blockSize <= x.size(); start += blockSize)
+        {
+            h.buf.setSize (1, blockSize, false, false, true);
+            h.buf.copyFrom (0, 0, x.data() + start, blockSize);
+            h.p.processBlock (h.buf, h.midi);
+            maxGr = std::max (maxGr, h.p.deEsser.getCurrentGainReductionDb());
+        }
+        std::cout << "  with the suggestion applied: up to " << juce::String (maxGr, 1) << " dB of de-essing on the s sounds" << std::endl;
+        check (maxGr > 2.0f && maxGr <= 8.01f, "suggested threshold produces real but moderate de-essing");
+
+        std::vector<float> speechOnly ((size_t) fs * 20);
+        for (size_t i = 0; i < speechOnly.size(); ++i)
+            speechOnly[i] = 0.1f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * (double) i / fs);
+        check (! dsp::analysis::suggestDeEss (speechOnly.data(), (int) speechOnly.size(), fs).ok, "says so when there are no s sounds");
+    }
+    // EQ: same voice through a +8 dB resonance at 450 Hz ("boxy" mic / room)
+    {
+        Voice v (120.0, false, -18.0f);
+        dsp::SvfCoeffs box; box.bell (450.0, 3.0, 8.0, fs);
+        dsp::SvfState st;
+        std::vector<float> x ((size_t) fs * 20);
+        for (size_t i = 0; i < x.size(); ++i) x[i] = st.process (v ((int64_t) i), box);
+        const auto s = dsp::analysis::suggestEq (x.data(), (int) x.size(), fs);
+        juce::String row ("  EQ: HPF " + juce::String (s.hpFreq, 0) + " Hz;");
+        for (auto& b : s.bands) row << "  " << juce::String (b.freq, 0) << " Hz " << juce::String (b.gainDb, 1) << " dB";
+        row << ";  air " << juce::String (s.airGainDb, 1) << " dB";
+        std::cout << row << std::endl;
+        check (s.ok && s.bands[1].gainDb < -1.0f && std::abs (std::log2 (s.bands[1].freq / 450.0f)) < 1.0f / 3.0f,
+               "finds the boxy build-up at 450 Hz and suggests a cut");
+        bool gentle = s.hpFreq >= 60.0f && s.hpFreq <= 150.0f;
+        for (auto& b : s.bands) gentle &= b.gainDb >= -4.01f && b.gainDb <= 0.0f;
+        check (gentle, "suggestions stay gentle (cuts of 4 dB or less, HPF 60-150 Hz)");
+    }
+    // capture through the processor
+    {
+        Harness h; h.p.startCapture (LiveVoiceProcessor::CaptureTarget::deEss, 1.0);
+        Voice v (120.0, false, -18.0f);
+        h.run ([&v] (int64_t n) { return v (n); }, 1.2);
+        const auto cap = h.p.takeCapture();
+        check (cap.size() == (size_t) fs && std::any_of (cap.begin(), cap.end(), [] (float s) { return std::abs (s) > 1.0e-4f; }),
+               "the plugin records the voice for Suggest without touching the audio");
+    }
+}
+
+static void testUndoAndAB()
+{
+    std::cout << "\nUndo / redo and A/B settings" << std::endl;
+    Harness h;
+    auto gain3 = [&h] { return h.p.apvts.getRawParameterValue (bGain (2))->load(); };
+    h.p.undoManager.beginNewTransaction();
+    h.set (bGain (2), 3.0f);
+    h.p.apvts.copyState();   // flush to the undo history (the editor's timer does this live)
+    h.p.undoManager.beginNewTransaction();
+    h.set (bGain (2), -5.0f);
+    h.p.apvts.copyState();
+    h.p.undoManager.undo();
+    const float afterUndo = gain3();
+    h.p.undoManager.redo();
+    const float afterRedo = gain3();
+    std::cout << "  band 3 gain: set +3, then -5;  undo -> " << juce::String (afterUndo, 1) << ", redo -> " << juce::String (afterRedo, 1) << std::endl;
+    check (std::abs (afterUndo - 3.0f) < 0.05f && std::abs (afterRedo + 5.0f) < 0.05f, "undo and redo restore setting changes");
+
+    Harness a;
+    a.set (bGain (2), 2.0f);
+    a.p.selectSlot (1);                   // B starts as a copy of A
+    const float bStart = a.p.apvts.getRawParameterValue (bGain (2))->load();
+    a.set (bGain (2), 6.0f);
+    a.set (inGain, 4.0f);                 // gain staging is not part of A/B
+    a.p.selectSlot (0);
+    const float inA = a.p.apvts.getRawParameterValue (bGain (2))->load();
+    a.p.selectSlot (1);
+    const float inB = a.p.apvts.getRawParameterValue (bGain (2))->load();
+    std::cout << "  A = +2 dB, B edited to +6 dB:  B started at " << juce::String (bStart, 1) << ", back to A -> " << juce::String (inA, 1)
+              << ", B again -> " << juce::String (inB, 1) << std::endl;
+    check (std::abs (bStart - 2.0f) < 0.05f && std::abs (inA - 2.0f) < 0.05f && std::abs (inB - 6.0f) < 0.05f, "A/B switches between two complete settings");
+    check (std::abs (a.p.apvts.getRawParameterValue (inGain)->load() - 4.0f) < 0.05f, "A/B leaves input gain alone");
+
+    juce::MemoryBlock state; a.p.getStateInformation (state);
+    Harness r; r.p.setStateInformation (state.getData(), (int) state.getSize());
+    r.p.selectSlot (0);
+    check (r.p.getActiveSlot() == 0 && std::abs (r.p.apvts.getRawParameterValue (bGain (2))->load() - 2.0f) < 0.05f, "both A/B slots are saved with the session");
 }
 
 static void testDeEsser()
@@ -643,6 +807,90 @@ static void testPerformance()
     check (ms < 2000.0, "well under real time");
 }
 
+static int profile()
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    // ---- audio thread cost, per module, typical block ----
+    auto timeIt = [] (const char* name, std::function<void (Harness&)> setup)
+    {
+        Harness h; setup (h);
+        Voice v (120.0, false, -18.0f);
+        std::vector<float> sig ((size_t) fs * 10);
+        for (size_t i = 0; i < sig.size(); ++i) sig[i] = v ((int64_t) i);
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        for (size_t start = 0; start + blockSize <= sig.size(); start += blockSize)
+        {
+            h.buf.setSize (1, blockSize, false, false, true);
+            h.buf.copyFrom (0, 0, sig.data() + start, blockSize);
+            h.p.processBlock (h.buf, h.midi);
+        }
+        const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
+        std::cout << "  " << juce::String (name).paddedRight (' ', 34) << juce::String (ms / 100.0, 2) << "% of one core" << std::endl;
+    };
+    std::cout << "AUDIO (10 s of voice, 48 kHz, 256-sample blocks; detector thread excluded)" << std::endl;
+    timeIt ("everything off", [] (Harness& h) { h.allModulesOff(); });
+    timeIt ("PSE only", [] (Harness& h) { h.allModulesOff(); h.set (pseOn, 1); });
+    timeIt ("feedback (24 notches active)", [] (Harness& h) { h.allModulesOff(); h.set (fbOn, 1);
+        for (int i = 0; i < 24; ++i) { dsp::FeedbackSuppressor::Command c; c.type = dsp::FeedbackSuppressor::Command::Type::setFixed; c.freq = 300.0f + 300.0f * i; c.depthDb = -9.0f; h.p.sendNotchCommand (c); } });
+    timeIt ("dynamic EQ, 6 bands dynamic, HP48", [] (Harness& h) { h.allModulesOff(); h.set (eqOn, 1); h.set (bType (0), 7.0f);
+        for (int b = 0; b < 6; ++b) { h.set (bOn (b), 1); h.set (bDyn (b), b > 0 ? 1.0f : 0.0f); } });
+    timeIt ("de-esser (relative)", [] (Harness& h) { h.allModulesOff(); h.set (dsOn, 1); h.set (dsRelative, 1); });
+    timeIt ("compressor", [] (Harness& h) { h.allModulesOff(); h.set (compOn, 1); });
+    timeIt ("limiter", [] (Harness& h) { h.allModulesOff(); h.set (limitOn, 1); });
+    timeIt ("EVERYTHING ON", [] (Harness& h) { h.set (fbOn, 1); h.set (eqOn, 1); h.set (pseOn, 1); h.set (compOn, 1); h.set (dsRelative, 1);
+        for (int b = 0; b < 6; ++b) { h.set (bOn (b), 1); h.set (bDyn (b), b > 0 ? 1.0f : 0.0f); } });
+
+    // ---- GUI cost per frame ----
+    Harness h; h.p.presets.loadFactory (1);
+    Voice v (120.0, false, -18.0f);
+    int64_t pos = 0;
+    auto feed = [&] { for (int b = 0; b < 6; ++b) { h.buf.setSize (1, blockSize, false, false, true);
+        for (int i = 0; i < blockSize; ++i) h.buf.setSample (0, i, v (pos + i)); pos += blockSize; h.p.processBlock (h.buf, h.midi); } };
+    for (int i = 0; i < 200; ++i) feed();
+    std::unique_ptr<LiveVoiceEditor> ed (dynamic_cast<LiveVoiceEditor*> (h.p.createEditor()));
+    juce::Image img (juce::Image::ARGB, LiveVoiceEditor::designWidth, LiveVoiceEditor::designHeight, true);
+    for (float scale : { 1.0f, 0.8f })
+    {
+        ed->setSize (juce::roundToInt (LiveVoiceEditor::designWidth * scale), juce::roundToInt (LiveVoiceEditor::designHeight * scale));
+        double tUpdate = 0, tPaint = 0;
+        const int frames = 60;
+        for (int f = 0; f < frames; ++f)
+        {
+            feed();
+            auto t0 = juce::Time::getMillisecondCounterHiRes();
+            ed->refreshNow();
+            auto t1 = juce::Time::getMillisecondCounterHiRes();
+            juce::Graphics g (img);
+            ed->paintEntireComponent (g, true);
+            auto t2 = juce::Time::getMillisecondCounterHiRes();
+            tUpdate += t1 - t0; tPaint += t2 - t1;
+        }
+        std::cout << "GUI at " << (int) (scale * 100) << "% size: update " << juce::String (tUpdate / frames, 2) << " ms + full repaint "
+                  << juce::String (tPaint / frames, 2) << " ms per frame -> at 30 fps = "
+                  << juce::String ((tUpdate + tPaint) / frames * 30.0 / 10.0, 1) << "% of one core" << std::endl;
+    }
+    // which parts of the paint cost most
+    ed->setSize (LiveVoiceEditor::designWidth, LiveVoiceEditor::designHeight);
+    std::function<void (juce::Component&, int)> walk = [&] (juce::Component& c, int depth)
+    {
+        for (auto* ch : c.getChildren())
+        {
+            if (depth == 1)
+            {
+                juce::Image im (juce::Image::ARGB, std::max (1, ch->getWidth()), std::max (1, ch->getHeight()), true);
+                auto t0 = juce::Time::getMillisecondCounterHiRes();
+                for (int i = 0; i < 20; ++i) { juce::Graphics g (im); ch->paintEntireComponent (g, true); }
+                const double ms = (juce::Time::getMillisecondCounterHiRes() - t0) / 20.0;
+                std::cout << "    paint " << juce::String (typeid (*ch).name()).paddedRight (' ', 22) << juce::String (ms, 2) << " ms" << std::endl;
+            }
+            if (depth < 1) walk (*ch, depth + 1);
+        }
+    };
+    walk (*ed, 0);
+    ed.reset();
+    return 0;
+}
+
 static int snapshot (const juce::String& path, bool light, bool toggle)
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -693,6 +941,7 @@ static int snapshot (const juce::String& path, bool light, bool toggle)
 
 int main (int argc, char** argv)
 {
+    if (argc >= 2 && juce::String (argv[1]) == "--profile") return profile();
     if (argc >= 3 && juce::String (argv[1]) == "--snapshot")
         return snapshot (argv[2], argc >= 4 && juce::String (argv[3]) == "light", argc >= 4 && juce::String (argv[3]) == "toggle");
 
@@ -700,6 +949,9 @@ int main (int argc, char** argv)
     testLatency();
     testDynamicEq();
     testSolo();
+    testMonitorBus();
+    testSuggest();
+    testUndoAndAB();
     testDeEsser();
     testLimiter();
     testPresets();

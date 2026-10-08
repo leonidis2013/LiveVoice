@@ -4,13 +4,16 @@
 #include "ui/Theme.h"
 #include "ui/RtaDisplay.h"
 #include "ui/Panels.h"
+#if LIVEVOICE_USE_OPENGL
+ #include <juce_opengl/juce_opengl.h>
+#endif
 
 // The whole UI is laid out once at a fixed design size and scaled as a
 // unit, so it stays a single page at any window size.
 class LiveVoiceEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
-    static constexpr int designWidth = 1600, designHeight = 940;
+    static constexpr int designWidth = 1760, designHeight = 980;
 
     explicit LiveVoiceEditor (LiveVoiceProcessor&);
     ~LiveVoiceEditor() override;
@@ -24,6 +27,14 @@ private:
     void timerCallback() override;
     void layoutCanvas();
     void toggleTheme();
+    void zoom (float step);             // +/- step; 0 = fit to the screen
+    float fitScale() const;
+    void setGpu (bool on);
+
+    int tick = 0;
+   #if LIVEVOICE_USE_OPENGL
+    juce::OpenGLContext glContext;
+   #endif
 
     // applies the saved light/dark choice before any child is built
     struct ThemeLoader { ThemeLoader() { theme::setLightMode (theme::loadLightModePreference()); } };

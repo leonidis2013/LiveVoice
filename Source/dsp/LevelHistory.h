@@ -11,7 +11,7 @@ namespace dsp
     class LevelHistory
     {
     public:
-        static constexpr int size = 1024;
+        static constexpr int size = 4096;              // at 25 ms per column: ~100 s
         struct Point { float levelDb; float grDb; };
 
         void prepare (double sampleRate, int columnMs)

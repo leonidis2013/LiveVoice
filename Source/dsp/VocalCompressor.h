@@ -33,7 +33,7 @@ namespace dsp
             fs = sampleRate;
             channels = juce::jlimit (1, 2, numChannels);
             lastHp = -1.0f;
-            history.prepare (fs, 30);
+            history.prepare (fs, 25);
             reset();
         }
 

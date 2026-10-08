@@ -281,6 +281,7 @@ namespace dsp
                 cmd.freq = track->freq;
                 cmd.fixed = learn;
                 suppressor.pushDetectorCommand (cmd);
+                logQueue.push ({ track->freq, learn });
 
                 lastDetectFreq = track->freq;
                 detectCount++;

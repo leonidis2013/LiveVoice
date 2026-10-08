@@ -3,6 +3,12 @@
 
 using namespace params;
 
+namespace
+{
+    constexpr float smoothingFractions[] { 3.0f, 6.0f, 12.0f };
+    const char* const smoothingNames[] { "1/3 oct", "1/6 oct", "1/12 oct" };
+}
+
 RtaDisplay::RtaDisplay (LiveVoiceProcessor& p) : proc (p)
 {
     window.resize (fftSize);
@@ -14,8 +20,50 @@ RtaDisplay::RtaDisplay (LiveVoiceProcessor& p) : proc (p)
     }
     for (auto& w : window) w *= (float) (2.0 / sum);   // full-scale sine reads 0 dBFS
     fftBuffer.resize (fftSize * 2);
-    binDb.resize (fftSize / 2 + 1);
+    binMag.resize (fftSize / 2 + 1);
     setOpaque (true);
+
+    // view: input / output / both
+    for (auto* b : { &viewIn, &viewOut, &viewBoth })
+    {
+        b->setClickingTogglesState (true);
+        b->setRadioGroupId (101);
+        b->setColour (juce::TextButton::buttonOnColourId, theme::output);
+        b->setColour (juce::TextButton::textColourOnId, theme::onAccent);
+        addAndMakeVisible (b);
+    }
+    viewIn.onClick   = [this] { proc.rtaView = 0; repaint(); };
+    viewOut.onClick  = [this] { proc.rtaView = 1; repaint(); };
+    viewBoth.onClick = [this] { proc.rtaView = 2; repaint(); };
+    viewIn.setTooltip ("Show only the input (before LiveVoice)");
+    viewOut.setTooltip ("Show only the output (what goes to FOH)");
+    viewBoth.setTooltip ("Input as a grey area behind the output");
+
+    smoothBtn.setTooltip ("RTA smoothing: 1/3, 1/6 or 1/12 octave");
+    smoothBtn.onClick = [this] { proc.rtaSmoothing = (proc.rtaSmoothing + 1) % 3; updateButtons(); };
+    tiltBtn.setClickingTogglesState (true);
+    tiltBtn.setColour (juce::TextButton::buttonOnColourId, theme::output);
+    tiltBtn.setColour (juce::TextButton::textColourOnId, theme::onAccent);
+    tiltBtn.setTooltip ("+3 dB/octave tilt (pivot 1 kHz): pink noise reads flat, like most live RTAs");
+    tiltBtn.onClick = [this] { proc.rtaTilt = tiltBtn.getToggleState(); };
+    addAndMakeVisible (smoothBtn);
+    addAndMakeVisible (tiltBtn);
+
+    soloBanner.setColour (juce::TextButton::buttonColourId, theme::warn);
+    soloBanner.setColour (juce::TextButton::textColourOffId, theme::onAccent);
+    soloBanner.onClick = [this] { proc.soloTarget = LiveVoiceProcessor::soloNone; };
+    addChildComponent (soloBanner);
+
+    updateButtons();
+}
+
+void RtaDisplay::updateButtons()
+{
+    viewIn.setToggleState (proc.rtaView == 0, juce::dontSendNotification);
+    viewOut.setToggleState (proc.rtaView == 1, juce::dontSendNotification);
+    viewBoth.setToggleState (proc.rtaView == 2, juce::dontSendNotification);
+    smoothBtn.setButtonText (smoothingNames[juce::jlimit (0, 2, proc.rtaSmoothing)]);
+    tiltBtn.setToggleState (proc.rtaTilt, juce::dontSendNotification);
 }
 
 // ---------------------------------------------------------------- mapping
@@ -43,9 +91,29 @@ float RtaDisplay::eqDbForY (float y) const
 void RtaDisplay::resized()
 {
     plot = getLocalBounds().toFloat().withTrimmedLeft (38.0f).withTrimmedRight (36.0f)
-                                      .withTrimmedTop (22.0f).withTrimmedBottom (20.0f);
-    inCols.assign ((size_t) std::max (1, (int) plot.getWidth()), specBottom);
-    outCols.assign (inCols.size(), specBottom);
+                                      .withTrimmedTop (24.0f).withTrimmedBottom (20.0f);
+    const size_t nCols = (size_t) std::max (1, (int) plot.getWidth() / 2);
+    inCols.assign (nCols, specBottom);
+    outCols.assign (nCols, specBottom);
+
+    // curve sample points every 3 px
+    const int nPts = std::max (2, (int) plot.getWidth() / 3);
+    curveFreqs.resize ((size_t) nPts);
+    curveX.resize ((size_t) nPts);
+    for (int i = 0; i < nPts; ++i)
+    {
+        curveX[(size_t) i] = plot.getX() + plot.getWidth() * (float) i / (float) (nPts - 1);
+        curveFreqs[(size_t) i] = freqForX (curveX[(size_t) i]);
+    }
+    for (auto& s : bandSig) s.clear();
+    eqDirty = notchDirty = gridDirty = true;
+
+    int x = 44;
+    auto place = [&] (juce::Button& b, int w) { b.setBounds (x, 3, w, 18); x += w + 3; };
+    place (viewIn, 34); place (viewOut, 40); place (viewBoth, 46);
+    x += 8;
+    place (smoothBtn, 60); place (tiltBtn, 40);
+    soloBanner.setBounds (juce::Rectangle<int> (240, 22).withCentre ({ (int) plot.getCentreX(), (int) plot.getY() + 16 }));
 }
 
 // ---------------------------------------------------------------- params
@@ -67,10 +135,11 @@ void RtaDisplay::setParam (const juce::String& id, float realValue)
         rp->setValueNotifyingHost (rp->convertTo0to1 (realValue));
 }
 
-float RtaDisplay::bandEqDb (int b, double freq, bool includeDynamic) const
+void RtaDisplay::bandResponse (int b, bool includeDynamic, std::vector<float>& out) const
 {
     auto v = [this] (const juce::String& id) { return proc.apvts.getRawParameterValue (id)->load(); };
-    if (v (bOn (b)) < 0.5f) return 0.0f;
+    out.assign (curveFreqs.size(), 0.0f);
+    if (v (bOn (b)) < 0.5f) return;
 
     dsp::DynamicEq::BandSettings s;
     const auto shape = bandShapeFromChoice (b, (b == 0 || b == numEqBands - 1) ? (int) v (bType (b)) : 0);
@@ -80,9 +149,12 @@ float RtaDisplay::bandEqDb (int b, double freq, bool includeDynamic) const
     int stages = 1;
     const double fs = proc.currentSampleRate.load();
     dsp::DynamicEq::designBand (s, v (bFreq (b)), v (bQ (b)), gain, fs, c, stages);
-    double db = 0.0;
-    for (int i = 0; i < stages; ++i) db += c[i].magnitudeDb (freq, fs);
-    return (float) db;
+    for (size_t i = 0; i < curveFreqs.size(); ++i)
+    {
+        double db = 0.0;
+        for (int st = 0; st < stages; ++st) db += c[st].magnitudeDb (curveFreqs[i], fs);
+        out[i] = (float) db;
+    }
 }
 
 juce::Point<float> RtaDisplay::handlePosition (int b) const
@@ -119,6 +191,86 @@ int RtaDisplay::hitNotch (juce::Point<float> pos) const
     return best;
 }
 
+// Recomputes only what changed since the last frame.
+void RtaDisplay::refreshCurves()
+{
+    auto v = [this] (const juce::String& id) { return proc.apvts.getRawParameterValue (id)->load(); };
+    const size_t n = curveFreqs.size();
+
+    const bool eqOn = v (params::eqOn) > 0.5f;
+    if (eqOn != eqWasOn) { eqDirty = true; eqWasOn = eqOn; }
+
+    bool anyChanged = eqDirty;
+    for (int b = 0; b < numEqBands; ++b)
+    {
+        std::vector<float> sig { v (bOn (b)), (b == 0 || b == numEqBands - 1) ? v (bType (b)) : 0.0f,
+                                 v (bFreq (b)), v (bGain (b)), v (bQ (b)), v (bDyn (b)) };
+        const bool dyn = sig[5] > 0.5f && sig[0] > 0.5f;
+        if (sig != bandSig[(size_t) b] || bandStatic[(size_t) b].size() != n)
+        {
+            bandSig[(size_t) b] = sig;
+            bandResponse (b, false, bandStatic[(size_t) b]);
+            bandLiveGain[(size_t) b] = 1.0e9f;   // force live refresh
+            anyChanged = true;
+        }
+        if (! dyn)
+        {
+            if (bandLive[(size_t) b] != bandStatic[(size_t) b]) { bandLive[(size_t) b] = bandStatic[(size_t) b]; anyChanged = true; }
+        }
+        else if (std::abs (dynGain[(size_t) b] - bandLiveGain[(size_t) b]) > 0.05f)
+        {
+            bandResponse (b, true, bandLive[(size_t) b]);
+            bandLiveGain[(size_t) b] = dynGain[(size_t) b];
+            anyChanged = true;
+        }
+    }
+    if (anyChanged)
+    {
+        eqStatic.assign (n, 0.0f);
+        eqLive.assign (n, 0.0f);
+        if (eqOn)
+            for (int b = 0; b < numEqBands; ++b)
+                for (size_t i = 0; i < n; ++i) { eqStatic[i] += bandStatic[(size_t) b][i]; eqLive[i] += bandLive[(size_t) b][i]; }
+        eqDirty = false;
+        repaint();
+    }
+
+    // notches: signature of every active slot
+    const bool fbOn = v (params::fbOn) > 0.5f;
+    const float q = proc.getNotchQ();
+    std::vector<float> sig;
+    if (fbOn)
+        for (auto& nt : notches)
+            if (nt.kind != dsp::FeedbackSuppressor::kindInactive && nt.depthDb < -0.05f)
+            {
+                sig.push_back (std::round (nt.freq));
+                sig.push_back (std::round (nt.depthDb * 10.0f));   // 0.1 dB steps
+            }
+    if (notchDirty || sig != lastNotchSig || ! juce::exactlyEqual (q, lastNotchQ) || fbOn != fbWasOn || notchCurve.size() != n)
+    {
+        lastNotchSig = sig; lastNotchQ = q; fbWasOn = fbOn;
+        notchCurve.assign (n, 0.0f);
+        if (fbOn)
+        {
+            const double fs = proc.currentSampleRate.load();
+            for (auto& nt : notches)
+            {
+                if (nt.kind == dsp::FeedbackSuppressor::kindInactive || nt.depthDb > -0.05f) continue;
+                dsp::SvfCoeffs c;
+                c.bell (nt.freq, q, nt.depthDb, fs);
+                for (size_t i = 0; i < n; ++i)
+                {
+                    // a narrow notch only matters within ~2 octaves; skip the far-away points
+                    if (std::abs (std::log2 (curveFreqs[i] / nt.freq)) > 2.0f) continue;
+                    notchCurve[i] += (float) c.magnitudeDb (curveFreqs[i], fs);
+                }
+            }
+        }
+        notchDirty = false;
+        repaint();
+    }
+}
+
 // ---------------------------------------------------------------- analysis
 void RtaDisplay::computeSpectrum (ScopeTap& tap, std::vector<float>& cols)
 {
@@ -128,33 +280,36 @@ void RtaDisplay::computeSpectrum (ScopeTap& tap, std::vector<float>& cols)
     fft.performFrequencyOnlyForwardTransform (fftBuffer.data(), true);
 
     const int numBins = fftSize / 2;
-    for (int k = 0; k <= numBins; ++k)
-        binDb[(size_t) k] = fftBuffer[(size_t) k];   // linear for now
+    for (int k = 0; k <= numBins; ++k) binMag[(size_t) k] = fftBuffer[(size_t) k];
 
     const double fs = proc.currentSampleRate.load();
     const float binHz = (float) (fs / fftSize);
     const int nCols = (int) cols.size();
-    const float smoothing = std::pow (2.0f, 1.0f / 48.0f);   // ~1/24 octave per column window
+    const float half = std::pow (2.0f, 0.5f / smoothingFractions[juce::jlimit (0, 2, proc.rtaSmoothing)]);
+    const bool tilt = proc.rtaTilt;
 
     for (int x = 0; x < nCols; ++x)
     {
-        const float f = freqForX (plot.getX() + (float) x + 0.5f);
-        const float lo = f / smoothing / binHz, hi = f * smoothing / binHz;
+        const float f = freqForX (plot.getX() + (float) (2 * x) + 1.0f);
+        const float lo = f / half / binHz, hi = f * half / binHz;
         float power = 0.0f;
         if (hi - lo < 1.0f)
         {
             const float pos = juce::jlimit (0.0f, (float) numBins - 1.001f, f / binHz);
             const int k = (int) pos;
             const float frac = pos - (float) k;
-            const float a = binDb[(size_t) k] * (1.0f - frac) + binDb[(size_t) k + 1] * frac;
+            const float a = binMag[(size_t) k] * (1.0f - frac) + binMag[(size_t) k + 1] * frac;
             power = a * a;
         }
         else
         {
+            // average power across the smoothing band (true fractional-octave smoothing)
             const int k0 = juce::jlimit (0, numBins, (int) std::ceil (lo)), k1 = juce::jlimit (0, numBins, (int) std::floor (hi));
-            for (int k = k0; k <= k1; ++k) power = std::max (power, binDb[(size_t) k] * binDb[(size_t) k]);
+            for (int k = k0; k <= k1; ++k) power += binMag[(size_t) k] * binMag[(size_t) k];
+            power /= (float) std::max (1, k1 - k0 + 1);
         }
-        const float db = 10.0f * std::log10 (power + 1.0e-14f);
+        float db = 10.0f * std::log10 (power + 1.0e-14f);
+        if (tilt) db += 3.0f * std::log2 (f / 1000.0f);
 
         auto& c = cols[(size_t) x];
         c = db > c ? 0.5f * (db + c) : std::max (db, c - 1.2f);   // fast rise, ~36 dB/s fall
@@ -165,13 +320,14 @@ void RtaDisplay::update()
 {
     if (plot.isEmpty()) return;
 
-    computeSpectrum (proc.inputTap, inCols);
-    computeSpectrum (proc.outputTap, outCols);
+    if (proc.rtaView != 1) computeSpectrum (proc.inputTap, inCols);
+    if (proc.rtaView != 0) computeSpectrum (proc.outputTap, outCols);
 
     for (int i = 0; i < (int) notches.size(); ++i)
         notches[(size_t) i] = proc.feedback.getNotch (i);
     for (int b = 0; b < numEqBands; ++b)
         dynGain[(size_t) b] = proc.dynEq.getDynamicGainDb (b);
+    refreshCurves();
 
     const int count = proc.detector.getDetectionCount();
     if (count != lastDetectCount)
@@ -183,47 +339,72 @@ void RtaDisplay::update()
     else
         detectFlash = std::max (0.0f, detectFlash - 0.012f);
 
+    // solo banner (moved here from the header): obvious, and one click clears it
+    const int st = proc.soloTarget.load();
+    const bool soloOn = st != LiveVoiceProcessor::soloNone;
+    soloBanner.setVisible (soloOn);
+    if (soloOn)
+    {
+        soloFlash = (soloFlash + 1) % 30;
+        soloBanner.setAlpha (soloFlash < 18 ? 1.0f : 0.6f);
+        const juce::String what = st == LiveVoiceProcessor::soloDeEss ? "DE-ESSER" : "EQ BAND " + juce::String (st + 1);
+        const bool toMain = proc.soloToMain.load();
+        const juce::String txt = "SOLO " + what + (toMain ? " ON MAIN OUT" : " ON MONITOR") + "  -  CLEAR";
+        if (soloBanner.getButtonText() != txt) soloBanner.setButtonText (txt);
+    }
+    updateButtons();
     repaint();
 }
 
 // ---------------------------------------------------------------- painting
-void RtaDisplay::paint (juce::Graphics& g)
+void RtaDisplay::renderGrid()
 {
+    const float scale = juce::Component::getApproximateScaleFactorForComponent (this);
+    const float s = std::max (1.0f, scale);
+    gridImage = juce::Image (juce::Image::RGB, std::max (1, juce::roundToInt (getWidth() * s)), std::max (1, juce::roundToInt (getHeight() * s)), false);
+    juce::Graphics g (gridImage);
+    g.addTransform (juce::AffineTransform::scale (s));
+
     g.fillAll (theme::panel);
-    drawGrid (g);
+    g.setFont (theme::font (10.5f));
 
-    // spectra
-    const int nCols = (int) outCols.size();
-    if (nCols > 1)
+    const float freqs[] { 20, 30, 40, 50, 60, 80, 100, 200, 300, 400, 500, 600, 800, 1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 20000 };
+    for (float f : freqs)
     {
-        juce::Path outFill, outLine, inLine;
-        for (int x = 0; x < nCols; ++x)
-        {
-            const float px = plot.getX() + (float) x;
-            const float yo = yForSpecDb (outCols[(size_t) x]);
-            const float yi = yForSpecDb (inCols[(size_t) x]);
-            if (x == 0) { outFill.startNewSubPath (px, plot.getBottom()); outLine.startNewSubPath (px, yo); inLine.startNewSubPath (px, yi); }
-            outFill.lineTo (px, yo);
-            if (x > 0) { outLine.lineTo (px, yo); inLine.lineTo (px, yi); }
-        }
-        outFill.lineTo (plot.getRight(), plot.getBottom());
-        outFill.closeSubPath();
+        const int fi = juce::roundToInt (f);
+        const bool major = fi == 100 || fi == 1000 || fi == 10000;
+        g.setColour (major ? theme::grid.overlaidWith (theme::textFaint.withAlpha (0.3f)) : theme::grid);
+        g.drawVerticalLine ((int) xForFreq (f), plot.getY(), plot.getBottom());
+    }
+    const std::pair<float, const char*> labels[] { { 50, "50" }, { 100, "100" }, { 200, "200" }, { 500, "500" }, { 1000, "1k" },
+                                                   { 2000, "2k" }, { 5000, "5k" }, { 10000, "10k" }, { 20000, "20k" } };
+    g.setColour (theme::textFaint);
+    for (auto& [f, t] : labels)
+        g.drawText (t, juce::Rectangle<float> (xForFreq (f) - 20.0f, plot.getBottom() + 2.0f, 40.0f, 16.0f), juce::Justification::centred);
 
-        g.setGradientFill (juce::ColourGradient (theme::output.withAlpha (0.38f), 0.0f, plot.getY(),
-                                                 theme::output.withAlpha (0.04f), 0.0f, plot.getBottom(), false));
-        g.fillPath (outFill);
-        g.setColour (theme::output.withAlpha (0.85f));
-        g.strokePath (outLine, juce::PathStrokeType (1.2f));
-        g.setColour (theme::input.withAlpha (0.9f));
-        g.strokePath (inLine, juce::PathStrokeType (1.0f));
+    for (float db = specTop; db >= specBottom; db -= 12.0f)
+    {
+        const float y = yForSpecDb (db);
+        g.setColour (theme::grid);
+        g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
+        g.setColour (theme::textFaint);
+        g.drawText (juce::String ((int) db), juce::Rectangle<float> (2.0f, y - 7.0f, 32.0f, 14.0f), juce::Justification::centredRight);
+    }
+    for (int dbi = -18; dbi <= 18; dbi += 6)
+    {
+        const float y = yForEqDb ((float) dbi);
+        if (dbi == 0)
+        {
+            g.setColour (theme::eq.withAlpha (0.25f));
+            g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
+        }
+        g.setColour (theme::eq.withAlpha (0.45f));
+        g.drawText ((dbi > 0 ? "+" : "") + juce::String (dbi), juce::Rectangle<float> (plot.getRight() + 3.0f, y - 7.0f, 30.0f, 14.0f),
+                    juce::Justification::centredLeft);
     }
 
-    drawCurves (g);
-    drawNotchMarkers (g);
-    drawHandles (g);
-
     // legend
-    auto legend = getLocalBounds().toFloat().removeFromTop (20.0f).withTrimmedRight (40.0f);
+    auto legend = getLocalBounds().toFloat().removeFromTop (22.0f).withTrimmedRight (40.0f);
     g.setFont (theme::font (11.5f));
     const std::tuple<const char*, juce::Colour, float> items[] {
         { "Input", theme::input, 54.0f }, { "Output", theme::output, 62.0f }, { "Dynamic EQ", theme::eq, 86.0f },
@@ -236,178 +417,138 @@ void RtaDisplay::paint (juce::Graphics& g)
         g.setColour (theme::textDim);
         g.drawText (std::get<0> (items[i]), r.withTrimmedLeft (15.0f), juce::Justification::centredLeft);
     }
-
     g.setColour (theme::textDim);
     g.setFont (theme::font (12.0f, true));
-    g.drawText ("RTA", getLocalBounds().toFloat().removeFromTop (20.0f).withTrimmedLeft (10.0f), juce::Justification::centredLeft);
+    g.drawText ("RTA", juce::Rectangle<float> (10.0f, 0.0f, 32.0f, 24.0f), juce::Justification::centredLeft);
+
+    g.setColour (theme::border);
+    g.drawRect (getLocalBounds().toFloat(), 1.0f);
+    gridDirty = false;
+}
+
+void RtaDisplay::paint (juce::Graphics& g)
+{
+    if (gridDirty || gridImage.isNull()) renderGrid();
+    g.drawImage (gridImage, getLocalBounds().toFloat());
+
+    {
+        juce::Graphics::ScopedSaveState clip (g);
+        g.reduceClipRegion (plot.toNearestInt());
+
+        drawDeEss (g);
+
+        // spectra: input as a solid grey area, output as a blue area with a line
+        const int nCols = (int) outCols.size();
+        auto areaPath = [&] (const std::vector<float>& cols, juce::Path& fill, juce::Path* line)
+        {
+            fill.startNewSubPath (plot.getX(), plot.getBottom());
+            for (int x = 0; x < nCols; ++x)
+            {
+                const float px = plot.getX() + (float) (2 * x);
+                const float y = yForSpecDb (cols[(size_t) x]);
+                fill.lineTo (px, y);
+                if (line != nullptr) { if (x == 0) line->startNewSubPath (px, y); else line->lineTo (px, y); }
+            }
+            fill.lineTo (plot.getRight(), plot.getBottom());
+            fill.closeSubPath();
+        };
+        if (proc.rtaView != 1)
+        {
+            juce::Path inFill;
+            areaPath (inCols, inFill, nullptr);
+            g.setColour (theme::input.withAlpha (theme::lightMode ? 0.35f : 0.45f));
+            g.fillPath (inFill);
+        }
+        if (proc.rtaView != 0)
+        {
+            juce::Path outFill, outLine;
+            areaPath (outCols, outFill, &outLine);
+            g.setColour (theme::output.withAlpha (proc.rtaView == 2 ? 0.28f : 0.35f));
+            g.fillPath (outFill);
+            g.setColour (theme::output.withAlpha (0.9f));
+            g.strokePath (outLine, juce::PathStrokeType (1.2f));
+        }
+
+        // cached curves
+        const size_t n = curveFreqs.size();
+        if (n > 1 && eqLive.size() == n && notchCurve.size() == n)
+        {
+            if (fbWasOn)
+            {
+                juce::Path fb;
+                for (size_t i = 0; i < n; ++i)
+                    if (i == 0) fb.startNewSubPath (curveX[i], yForEqDb (notchCurve[i])); else fb.lineTo (curveX[i], yForEqDb (notchCurve[i]));
+                g.setColour (theme::feedback.withAlpha (0.95f));
+                g.strokePath (fb, juce::PathStrokeType (1.6f));
+            }
+            if (eqWasOn)
+            {
+                juce::Path live, stat, fill;
+                const float y0 = yForEqDb (0.0f);
+                fill.startNewSubPath (curveX[0], y0);
+                for (size_t i = 0; i < n; ++i)
+                {
+                    const float yl = yForEqDb (eqLive[i]), ys = yForEqDb (eqStatic[i]);
+                    if (i == 0) { live.startNewSubPath (curveX[i], yl); stat.startNewSubPath (curveX[i], ys); }
+                    else        { live.lineTo (curveX[i], yl); stat.lineTo (curveX[i], ys); }
+                    fill.lineTo (curveX[i], yl);
+                }
+                fill.lineTo (curveX[n - 1], y0);
+                fill.closeSubPath();
+                g.setColour (theme::eq.withAlpha (0.10f));
+                g.fillPath (fill);
+                if (eqLive != eqStatic)   // only draw the static (dashed) curve when the dynamic one differs
+                {
+                    g.setColour (theme::eq.withAlpha (0.45f));
+                    const float dashes[] { 4.0f, 3.0f };
+                    juce::Path dashed;
+                    juce::PathStrokeType (1.0f).createDashedStroke (dashed, stat, dashes, 2);
+                    g.fillPath (dashed);
+                }
+                g.setColour (theme::eq);
+                g.strokePath (live, juce::PathStrokeType (2.0f));
+            }
+        }
+    }
+
+    drawNotchMarkers (g);
+    drawHandles (g);
 
     if (detectFlash > 0.0f && detectFreq > 0.0f)
     {
         const juce::String txt = "FEEDBACK  " + (detectFreq >= 1000.0f ? juce::String (detectFreq / 1000.0f, 2) + " kHz"
                                                                       : juce::String (juce::roundToInt (detectFreq)) + " Hz");
-        auto r = juce::Rectangle<float> (plot.getX() + 46.0f, 2.0f, 150.0f, 17.0f);
+        auto r = juce::Rectangle<float> (300.0f, 3.0f, 150.0f, 18.0f);
         g.setColour (theme::feedback.withAlpha (0.22f * detectFlash + 0.1f));
         g.fillRoundedRectangle (r, 4.0f);
         g.setColour (theme::feedback.withAlpha (0.4f + 0.6f * detectFlash));
         g.setFont (theme::font (11.5f, true));
         g.drawText (txt, r, juce::Justification::centred);
     }
-
-    g.setColour (theme::border);
-    g.drawRect (getLocalBounds().toFloat(), 1.0f);
 }
 
-void RtaDisplay::drawGrid (juce::Graphics& g)
-{
-    g.setFont (theme::font (10.5f));
-
-    const float freqs[] { 20, 30, 40, 50, 60, 80, 100, 200, 300, 400, 500, 600, 800, 1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 20000 };
-    for (float f : freqs)
-    {
-        const float x = xForFreq (f);
-        const int fi = juce::roundToInt (f);
-        const bool major = fi == 100 || fi == 1000 || fi == 10000;
-        g.setColour (major ? theme::grid.overlaidWith (theme::textFaint.withAlpha (0.3f)) : theme::grid);
-        g.drawVerticalLine ((int) x, plot.getY(), plot.getBottom());
-    }
-    const std::pair<float, const char*> labels[] { { 50, "50" }, { 100, "100" }, { 200, "200" }, { 500, "500" }, { 1000, "1k" },
-                                                   { 2000, "2k" }, { 5000, "5k" }, { 10000, "10k" }, { 20000, "20k" } };
-    g.setColour (theme::textFaint);
-    for (auto& [f, t] : labels)
-        g.drawText (t, juce::Rectangle<float> (xForFreq (f) - 20.0f, plot.getBottom() + 2.0f, 40.0f, 16.0f), juce::Justification::centred);
-
-    // spectrum dB on the left
-    for (float db = specTop; db >= specBottom; db -= 12.0f)
-    {
-        const float y = yForSpecDb (db);
-        g.setColour (theme::grid);
-        g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
-        g.setColour (theme::textFaint);
-        g.drawText (juce::String ((int) db), juce::Rectangle<float> (2.0f, y - 7.0f, 32.0f, 14.0f), juce::Justification::centredRight);
-    }
-
-    // EQ dB on the right
-    for (int dbi = -18; dbi <= 18; dbi += 6)
-    {
-        const float db = (float) dbi;
-        const float y = yForEqDb (db);
-        if (dbi == 0)
-        {
-            g.setColour (theme::eq.withAlpha (0.25f));
-            g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
-        }
-        g.setColour (theme::eq.withAlpha (0.45f));
-        g.drawText ((db > 0 ? "+" : "") + juce::String ((int) db), juce::Rectangle<float> (plot.getRight() + 3.0f, y - 7.0f, 30.0f, 14.0f),
-                    juce::Justification::centredLeft);
-    }
-}
-
-// De-esser: shaded detection band plus its live reduction curve.
+// De-esser: a quiet shaded band with a label. No live numbers.
 void RtaDisplay::drawDeEss (juce::Graphics& g)
 {
     auto v = [this] (const juce::String& id) { return proc.apvts.getRawParameterValue (id)->load(); };
-    if (v (dsOn) < 0.5f && proc.soloTarget.load() != LiveVoiceProcessor::soloDeEss) return;
-
-    dsp::DeEsser::Settings s;
-    s.mode = juce::jlimit (0, 2, (int) v (dsMode));
-    s.freq = v (dsFreq); s.q = v (dsQ);
-    const double fs = proc.currentSampleRate.load();
-    const float gr = proc.deEsser.getCurrentGainReductionDb();
     const bool soloed = proc.soloTarget.load() == LiveVoiceProcessor::soloDeEss;
+    if (v (dsOn) < 0.5f && ! soloed) return;
 
-    float lo = s.freq, hi = maxFreq;
-    if (s.mode == dsp::DeEsser::band)
+    const int mode = juce::jlimit (0, 2, (int) v (dsMode));
+    const float freq = v (dsFreq), q = v (dsQ);
+    float lo = freq, hi = maxFreq;
+    if (mode == dsp::DeEsser::band)
     {
-        const float bwOct = 2.0f * std::asinh (1.0f / (2.0f * s.q)) / std::log (2.0f);
-        lo = s.freq * std::pow (2.0f, -bwOct * 0.5f);
-        hi = s.freq * std::pow (2.0f, bwOct * 0.5f);
+        const float bwOct = 2.0f * std::asinh (1.0f / (2.0f * q)) / std::log (2.0f);
+        lo = freq * std::pow (2.0f, -bwOct * 0.5f);
+        hi = freq * std::pow (2.0f, bwOct * 0.5f);
     }
     const float x0 = xForFreq (juce::jlimit (minFreq, maxFreq, lo)), x1 = xForFreq (juce::jlimit (minFreq, maxFreq, hi));
-    const float activity = juce::jlimit (0.0f, 1.0f, gr / std::max (1.0f, v (dsRange)));
-    g.setColour (theme::deess.withAlpha ((soloed ? 0.20f : 0.08f) + 0.14f * activity));
+    g.setColour (theme::deess.withAlpha (soloed ? 0.18f : 0.09f));
     g.fillRect (juce::Rectangle<float> (x0, plot.getY(), x1 - x0, plot.getHeight()));
-    g.setColour (theme::deess.withAlpha (0.5f));
-    g.drawVerticalLine ((int) xForFreq (s.freq), plot.getY(), plot.getBottom());
-
-    // label at the top of the band
     g.setFont (theme::font (10.5f, true));
-    g.setColour (theme::deess);
-    const juce::String label = juce::String (soloed ? "SOLO  " : "") + "DE-ESS " + (gr > 0.2f ? juce::String (-gr, 1) + " dB" : "");
-    g.drawText (label, juce::Rectangle<float> (xForFreq (s.freq) - 70.0f, plot.getY() + 22.0f, 140.0f, 14.0f), juce::Justification::centred);
-
-    // live reduction curve
-    if (gr > 0.05f)
-    {
-        juce::Path curve;
-        const int n = std::max (2, (int) plot.getWidth() / 2);
-        for (int i = 0; i < n; ++i)
-        {
-            const float x = plot.getX() + plot.getWidth() * (float) i / (float) (n - 1);
-            const float y = yForEqDb (dsp::DeEsser::reductionResponseDb (s, gr, freqForX (x), fs));
-            if (i == 0) curve.startNewSubPath (x, y); else curve.lineTo (x, y);
-        }
-        g.setColour (theme::deess);
-        g.strokePath (curve, juce::PathStrokeType (1.8f));
-    }
-}
-
-void RtaDisplay::drawCurves (juce::Graphics& g)
-{
-    const double fs = proc.currentSampleRate.load();
-    const int nCols = std::max (2, (int) plot.getWidth() / 2);
-    const bool eqOnNow = proc.apvts.getRawParameterValue (params::eqOn)->load() > 0.5f;
-    const bool fbOnNow = proc.apvts.getRawParameterValue (params::fbOn)->load() > 0.5f;
-    const float q = proc.getNotchQ();
-
-    juce::Path eqStatic, eqLive, eqFill, fbCurve;
-    for (int i = 0; i < nCols; ++i)
-    {
-        const float x = plot.getX() + plot.getWidth() * (float) i / (float) (nCols - 1);
-        const double f = freqForX (x);
-        float sDb = 0.0f, lDb = 0.0f;
-        if (eqOnNow)
-            for (int b = 0; b < numEqBands; ++b) { sDb += bandEqDb (b, f, false); lDb += bandEqDb (b, f, true); }
-        const float nDb = fbOnNow ? dsp::FeedbackSuppressor::responseDb (notches.data(), (int) notches.size(), q, f, fs) : 0.0f;
-
-        const float ys = yForEqDb (sDb), yl = yForEqDb (lDb), yn = yForEqDb (nDb);
-        if (i == 0)
-        {
-            eqStatic.startNewSubPath (x, ys); eqLive.startNewSubPath (x, yl); fbCurve.startNewSubPath (x, yn);
-            eqFill.startNewSubPath (x, yForEqDb (0.0f)); eqFill.lineTo (x, yl);
-        }
-        else
-        {
-            eqStatic.lineTo (x, ys); eqLive.lineTo (x, yl); fbCurve.lineTo (x, yn); eqFill.lineTo (x, yl);
-        }
-    }
-    eqFill.lineTo (plot.getRight(), yForEqDb (0.0f));
-    eqFill.closeSubPath();
-
-    g.saveState();
-    g.reduceClipRegion (plot.toNearestInt());
-
-    drawDeEss (g);
-
-    if (fbOnNow)
-    {
-        g.setColour (theme::feedback.withAlpha (0.95f));
-        g.strokePath (fbCurve, juce::PathStrokeType (1.6f));
-    }
-
-    if (eqOnNow)
-    {
-        g.setColour (theme::eq.withAlpha (0.10f));
-        g.fillPath (eqFill);
-        g.setColour (theme::eq.withAlpha (0.4f));
-        const float dashes[] { 4.0f, 3.0f };
-        juce::Path dashed;
-        juce::PathStrokeType (1.0f).createDashedStroke (dashed, eqStatic, dashes, 2);
-        g.fillPath (dashed);
-        g.setColour (theme::eq);
-        g.strokePath (eqLive, juce::PathStrokeType (2.0f));
-    }
-
-    g.restoreState();
+    g.setColour (theme::deess.withAlpha (0.85f));
+    g.drawText ("De-esser", juce::Rectangle<float> (0.5f * (x0 + x1) - 40.0f, plot.getBottom() - 18.0f, 80.0f, 14.0f), juce::Justification::centred);
 }
 
 void RtaDisplay::drawNotchMarkers (juce::Graphics& g)

@@ -29,6 +29,11 @@ public:
 
     static bool isPresetParameter (const juce::String& paramID);
 
+    // voice settings as (id, real value) pairs: used by A/B compare
+    using Values = std::vector<std::pair<juce::String, float>>;
+    Values captureValues() const;
+    void applyValues (const Values& values);
+
 private:
     struct Factory
     {
@@ -36,7 +41,6 @@ private:
         std::vector<std::pair<juce::String, float>> values;   // real (not normalised) values
     };
 
-    void applyValues (const std::vector<std::pair<juce::String, float>>& values);
     static std::vector<Factory> buildFactoryPresets();
 
     juce::AudioProcessorValueTreeState& apvts;

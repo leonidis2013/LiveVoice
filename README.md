@@ -1,4 +1,4 @@
-# LiveVoice — zero-latency vocal processor (VST3)
+# LiveVoice — zero-latency vocal processor (VST3)  ·  v0.4.0
 
 A single VST3 plugin for live voice: pastor on a face mic, lectern speech, male and female vocals.
 Everything in the audio path is zero latency (the plugin reports 0 samples to the host).
@@ -15,15 +15,15 @@ Input trim → **PSE** → **Feedback notches** → **6-band Dynamic EQ** → **
 
 | Section | What it does |
 |---|---|
-| **RTA** (top) | Input (grey line) and output (blue fill) spectrum, the live dynamic-EQ curve (solid teal, dashed = static setting), the feedback notch curve (orange), and the **de-esser band** (violet shading) with its live reduction curve. Notch markers sit along the top edge: filled = fixed, outline = floating. |
+| **RTA** (top) | Input as a solid grey area, output as a blue area, the live dynamic-EQ curve (teal; dashed = static setting, shown only when the dynamics are moving it), the feedback notch curve (orange) and the de-esser band (quiet violet shading). Buttons: **IN / OUT / BOTH**, smoothing **1/3 · 1/6 · 1/12 oct**, **TILT** (+3 dB/oct, pink noise reads flat). |
 | **IN / OUT meters** (right of the RTA) | Vertical peak meters with a colour-zoned scale: grey = too low, blue = quiet but OK, **green = TARGET (-18 to -6 dBFS peaks)**, yellow = hot, red = clip risk. Peak-hold value on top; click to reset. |
-| **Middle row** | **De-ess history** and **compressor history** (level bars from the bottom, pink gain reduction hanging from the top, dashed threshold, dB scales both sides; ~9 s across, slowed down 3x) and the **compressor curve** with a live dot for the current input level. |
-| **PSE** (Primary Source Expander) | Smoothly turns the mic down between phrases: less stage bleed and room pickup, and less chance of feedback building while the mic is idle. Threshold, range, attack, hold, release, key HP/LP filters, open/closed lamp and key-level meter. |
-| **Feedback suppression** | Automatic detection + narrow notches. Modes: **Speech**, **Singing**, **Multipurpose**. |
-| **Dynamic EQ** | 6 bands, defaulting to the classic voice spots: **80 Hz HPF (rumble), 200 Hz boom/proximity, 450 Hz boxiness, 1 kHz nasal/honk, 3 kHz presence/harshness, 10 kHz air (shelf)**. Band 1: Bell / Low Shelf / **HP 6, 12, 18, 24, 36, 48 dB/oct**; band 6 the same with LP / High Shelf. Any bell or shelf can be dynamic (threshold, range ±18 dB, ratio, attack, release) and **SOLO**ed. |
-| **De-esser** | **Band (narrow)** mode cuts only the sibilance band, with a **Width (Q)** control; Shelf (all highs) and Wideband modes are still there. **RELATIVE** switches between absolute detection and detection relative to the whole voice. **SOLO** plays exactly what the de-esser hears. |
-| **Compressor** | Transparent, smooth vocal compressor at the output: RMS detection, soft knee, key high-pass, dB-domain smoothing, opto-style **AUTO RELEASE**, makeup and parallel mix. |
-| **Header** | Presets, input/output trim, safety limiter + ceiling with GR readout, **LIGHT** theme switch, bypass, and a flashing **SOLO** warning (click to clear) whenever a solo is on. |
+| **Middle row** | **De-ess history** (sibilance level, pink reduction from the top, threshold) and **compressor history** (input grey, compressed amber, makeup stacked in teal). Click the **10 s / 25 s / 60 s** button to change the span. Then the **compressor curve** with a live dot for the input level. |
+| **PSE** | Smoothly turns the mic down between phrases: less bleed and room pickup, less feedback risk while the mic is idle. |
+| **Feedback suppression** | Automatic detection + narrow notches. Modes: **Speech**, **Singing**, **Multipurpose**. **LOG** lists every frequency that rang (most frequent first, then all events with times) — copy it out after the service. |
+| **Dynamic EQ** | 6 bands at the classic voice spots (80 Hz HPF, 200 boom, 450 box, 1 k nasal, 3 k presence, 10 k air shelf); HP/LP 6-48 dB/oct on bands 1 and 6; proportional dynamics; **SOLO**; **SUGGEST**. |
+| **De-esser** | Band (narrow) / Shelf / Wideband, Width, RELATIVE detection, **SOLO**, **SUGGEST**. |
+| **Compressor** | Transparent vocal compressor with a stacked **IN / OUT** meter: input (grey), compressed level (amber), makeup on top (teal), plus GR and makeup readouts. |
+| **Header** | Presets · **UNDO / REDO** · **A / B** settings compare · input/output trim · limiter + ceiling · **MON: FX/DRY** (monitor A/B) · **− / FIT / +** zoom · **…** settings · LIGHT · BYPASS. Version number under the logo. |
 
 All gain-reduction meters have dB scales and numeric readouts.
 
@@ -36,9 +36,28 @@ All gain-reduction meters have dB scales and numeric readouts.
 ## Dynamic EQ — how the dynamic part behaves
 The dynamic cut (or boost) is **proportional**: it grows smoothly as the band gets louder than the threshold instead of switching between "off" and "full range". A 6 dB soft knee eases it in, **Ratio** sets how much it moves per dB over the threshold (2:1 = 1 dB of cut for every 2 dB over), and **Range** is approached gradually rather than hit like a wall. Attack/release smooth the gain itself. The **BAND LEVEL vs THRESHOLD** and **DYNAMIC GAIN** bars in the EQ panel show it working on the selected band, and the handle on the RTA moves with it.
 
-## Solo (listen)
-**SOLO** in the EQ panel plays only the selected band's region (taken after the EQ) — it follows you if you click another band. **SOLO** in the de-esser plays exactly what the de-esser listens to, so you can sweep Freq/Width onto the "s". While soloing, later modules are skipped so you hear the band uncoloured.
-**Careful: solo goes to the speakers too.** Use it at soundcheck or on a headphone/aux path. Solo is never saved with the session or automated, and the header flashes **SOLO … CLEAR** until you turn it off.
+## Monitor output, solo in place, and monitor A/B
+LiveVoice has a second output, **Monitor**. Route it to your headphones (or a cue output). It carries:
+- **FOH** (a copy of the main output) normally,
+- the **solo** whenever you press SOLO in the EQ or de-esser — **FOH is untouched** (tested bit-identical),
+- the **dry input** when **MON: DRY** is on — flip MON: FX / DRY to hear exactly what LiveVoice is doing, without the congregation hearing the switch.
+
+**LiveProfessor:** its routing lets any plugin output go anywhere, but *plugins inside a chain can't be routed outside it* — so put LiveVoice **outside a chain** (or as the last plugin you route from) to patch the Monitor output to your headphone output. If your setup can't route it, open **…** (settings) and turn on **Solo to main output**: solo then replaces the main output (the old behaviour) — use it only at soundcheck.
+
+Solo is never saved with the session, and a flashing **SOLO … CLEAR** banner sits on the RTA while it's on.
+
+## Suggest (de-esser and EQ)
+Press **SUGGEST** while the person talks normally; it listens for 20 s (press again to cancel).
+- **De-esser:** finds where their "s" energy peaks and how wide it is, sets Freq and Width, and a threshold that gives the typical "s" ~3 dB of reduction (louder ones more, up to Range).
+- **EQ:** compares the voice's long-term spectrum with its own smoothed trend and suggests a high-pass and **gentle cuts (4 dB max)** where it builds up in the boom / box / nasal / harsh ranges, plus a small air lift only if the voice is dull. Static gains only; your dynamic settings are untouched.
+
+Both are one step on the **UNDO** list. They're starting points — natural voice resonances can show up as small cuts, so listen and adjust.
+
+## Undo, A/B, zoom, GPU
+- **UNDO / REDO** covers every setting change, preset load and Suggest.
+- **A / B**: two complete voice settings. Click **B** (it starts as a copy of A), change things, click **A** to compare. **A>B** copies the current one over. Gain, limiter and notches are not part of A/B. Both slots are saved with the session.
+- **− / FIT / +** zooms the whole window (50-150%). The first time it opens it fits itself to your screen; afterwards it remembers your size.
+- **GPU drawing** (Windows/macOS, on by default, switch in **…**): draws the display with the graphics card.
 
 ## Feedback suppression — how to use it at church
 
@@ -99,8 +118,9 @@ cmake -S . -B build -DLIVEVOICE_BUILD_TESTS=ON
 cmake --build build --target LiveVoiceTests --config Release
 build/Tests/LiveVoiceTests_artefacts/Release/LiveVoiceTests
 ```
-The suite (65 checks) covers: zero latency with every module on (impulse comes out at sample 0); the dynamic EQ (proportional action: sweeping the band level past the threshold, the cut grows steadily — never more than ~1.9 dB extra per 4 dB louder — and matches the drawn curve within 0.02 dB); all six HP slopes measuring as designed (−7.0 / −12.3 / −18.1 / −24.1 / −36.1 / −48.2 dB one octave below the corner); EQ and de-ess solo; the narrow de-esser (−8 dB at the band, only −0.3 dB an octave below, nothing at 300 Hz), relative detection, PSE and compressor behaviour (ratio accuracy, soft knee, 0.008 dB gain ripple on a held 150 Hz note, program-dependent release, parallel mix); the limiter ceiling; the drawn EQ curve matching the audio; preset save/load/delete; a simulated **closed mic→speaker→room loop** that really howls without the plugin (suppression brings it down by roughly 28–36 dB depending on mode); zero false detections on 30 s of synthetic speech and singing in every mode and on 20 s of talking during Learn; ring-out Learn + session recall; floating-notch release; and CPU use (~5% of one core with everything on, including test-signal synthesis).
+The suite (80 checks) covers everything from the earlier versions (zero latency, proportional dynamic EQ, all HP/LP slopes, narrow de-esser, relative detection, PSE, compressor, limiter, presets, the simulated feedback loop in every mode, false detections, ring-out Learn and recall) plus, new in 0.4.0: **FOH bit-identical while soloing on the Monitor output**, monitor A/B playing the exact dry input, monitor following FOH otherwise, de-esser Suggest finding the sibilance (6.8 kHz on a 7 kHz test voice) and giving moderate reduction, EQ Suggest finding a planted 450 Hz build-up with gentle cuts, the Suggest capture, undo/redo, and A/B switching and session recall.
 
+`LiveVoiceTests --profile` prints CPU per module and per display part.
 `LiveVoiceTests --snapshot out.png [light|toggle]` renders the UI to a PNG.
 
 ## Honest limitations
@@ -121,6 +141,7 @@ Source/dsp/FeedbackSuppressor.* notch bank (fixed / floating)
 Source/dsp/DynamicEq.h          6-band dynamic EQ
 Source/dsp/DeEsser.h            de-esser (band/shelf/wideband, absolute/relative, listen)
 Source/dsp/LevelHistory.h       lock-free history for the scrolling strips
+Source/dsp/VoiceAnalysis.*      de-esser / EQ Suggest analysis
 Source/dsp/PrimarySourceExpander.h  PSE
 Source/dsp/VocalCompressor.h    output compressor
 Source/dsp/SafetyLimiter.h      output protection

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(LiveVoice VERSION 0.1.0 LANGUAGES C CXX)
+project(LiveVoice VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -46,6 +46,7 @@ set(LIVEVOICE_SOURCES
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/PresetManager.cpp
+    Source/dsp/VoiceAnalysis.cpp
     Source/dsp/FeedbackSuppressor.cpp
     Source/dsp/FeedbackDetector.cpp
     Source/ui/RtaDisplay.cpp
@@ -55,6 +56,7 @@ target_sources(LiveVoice PRIVATE ${LIVEVOICE_SOURCES})
 target_include_directories(LiveVoice PRIVATE Source)
 
 target_compile_definitions(LiveVoice PUBLIC
+    LIVEVOICE_VERSION="${PROJECT_VERSION}"
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
@@ -68,6 +70,12 @@ target_link_libraries(LiveVoice
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# GPU drawing (OpenGL) on Windows and macOS: much lower CPU for the meters and RTA
+if(WIN32 OR APPLE)
+    target_link_libraries(LiveVoice PRIVATE juce::juce_opengl)
+    target_compile_definitions(LiveVoice PUBLIC LIVEVOICE_USE_OPENGL=1)
+endif()
 
 if(LIVEVOICE_BUILD_TESTS)
     add_subdirectory(Tests)

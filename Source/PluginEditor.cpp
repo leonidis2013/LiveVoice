@@ -17,19 +17,35 @@ LiveVoiceEditor::LiveVoiceEditor (LiveVoiceProcessor& p) : AudioProcessorEditor 
     rta.setSelectedBand (proc.selectedBand.load());
 
     header.onThemeToggle = [this] { toggleTheme(); };
+    header.onZoom = [this] (float step) { zoom (step); };
+   #if LIVEVOICE_USE_OPENGL
+    header.isGpuOn = [this] { return glContext.isAttached(); };
+    header.onGpuToggle = [this] { setGpu (! glContext.isAttached()); };
+   #endif
+    deEssHistory.onSpanChanged = [this] { compHistory.update(); };
+    compHistory.onSpanChanged = [this] { deEssHistory.update(); };
     setLookAndFeel (&lnf);   // after the children exist, so they all pick it up
 
     setResizable (true, true);
-    setResizeLimits ((int) (designWidth * 0.6), (int) (designHeight * 0.6), (int) (designWidth * 1.5), (int) (designHeight * 1.5));
+    setResizeLimits ((int) (designWidth * 0.5), (int) (designHeight * 0.5), (int) (designWidth * 1.5), (int) (designHeight * 1.5));
     getConstrainer()->setFixedAspectRatio ((double) designWidth / designHeight);
-    const float s = juce::jlimit (0.6f, 1.5f, proc.uiScale.load());
+    // first time: auto-fit to the screen; afterwards: the size you chose last
+    const float s = proc.uiScaleRestored ? juce::jlimit (0.5f, 1.5f, proc.uiScale.load()) : fitScale();
+    proc.uiScaleRestored = true;
     setSize (juce::roundToInt (designWidth * s), juce::roundToInt (designHeight * s));
+
+   #if LIVEVOICE_USE_OPENGL
+    if (theme::loadGpuPreference()) setGpu (true);
+   #endif
     startTimerHz (30);
 }
 
 LiveVoiceEditor::~LiveVoiceEditor()
 {
     stopTimer();
+   #if LIVEVOICE_USE_OPENGL
+    glContext.detach();
+   #endif
     setLookAndFeel (nullptr);
 }
 
@@ -51,7 +67,7 @@ void LiveVoiceEditor::layoutCanvas()
     header.setBounds (r.removeFromTop (52));
     r.reduce (10, 8);
 
-    auto bottom = r.removeFromBottom (404);
+    auto bottom = r.removeFromBottom (408);
     r.removeFromBottom (8);
 
     // middle row: de-ess history | compressor history | compressor curve
@@ -106,20 +122,55 @@ void LiveVoiceEditor::toggleTheme()
     lnf.applyColours();
     theme::remapColours (*this, before, theme::currentPalette());
     sendLookAndFeelChange();
+    rta.invalidateCaches();
     repaint();
+}
+
+float LiveVoiceEditor::fitScale() const
+{
+    auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
+    if (display == nullptr) return 0.85f;
+    const auto area = display->userArea;
+    const float s = std::min ((float) area.getWidth() * 0.92f / (float) designWidth, (float) area.getHeight() * 0.88f / (float) designHeight);
+    return juce::jlimit (0.5f, 1.5f, s);
+}
+
+void LiveVoiceEditor::zoom (float step)
+{
+    const float current = (float) getWidth() / (float) designWidth;
+    const float s = std::abs (step) < 1.0e-4f ? fitScale() : juce::jlimit (0.5f, 1.5f, std::round ((current + step) * 10.0f) / 10.0f);
+    setSize (juce::roundToInt (designWidth * s), juce::roundToInt (designHeight * s));
+}
+
+void LiveVoiceEditor::setGpu (bool on)
+{
+   #if LIVEVOICE_USE_OPENGL
+    if (on && ! glContext.isAttached()) glContext.attachTo (*this);
+    else if (! on && glContext.isAttached()) glContext.detach();
+    theme::saveGpuPreference (on);
+   #else
+    juce::ignoreUnused (on);
+   #endif
 }
 
 void LiveVoiceEditor::timerCallback()
 {
-    header.update();
+    // fast (30 fps): things that move quickly
     rta.update();
     ioMeters.update();
-    deEssHistory.update();
-    compHistory.update();
-    compGraph.update();
-    psePanel.update();
-    feedbackPanel.update();
-    eqPanel.update();
-    deEssPanel.update();
     compPanel.update();
+
+    // slow (15 fps): slowly scrolling strips, panels, header
+    if ((++tick & 1) == 0)
+    {
+        header.update();
+        deEssHistory.update();
+        compHistory.update();
+        compGraph.update();
+        psePanel.update();
+        feedbackPanel.update();
+        eqPanel.update();
+        deEssPanel.update();
+        proc.pollFeedbackLog();
+    }
 }

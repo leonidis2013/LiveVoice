@@ -103,9 +103,27 @@ namespace theme
     {
         auto f = settingsFile();
         f.getParentDirectory().createDirectory();
-        juce::XmlElement xml ("LiveVoiceSettings");
-        xml.setAttribute ("lightMode", light);
-        xml.writeTo (f);
+        auto xml = juce::XmlDocument::parse (f);
+        if (xml == nullptr) xml = std::make_unique<juce::XmlElement> ("LiveVoiceSettings");
+        xml->setAttribute ("lightMode", light);
+        xml->writeTo (f);
+    }
+
+    inline bool loadGpuPreference()
+    {
+        if (auto xml = juce::XmlDocument::parse (settingsFile()))
+            return xml->getBoolAttribute ("gpu", true);
+        return true;   // on by default where available
+    }
+
+    inline void saveGpuPreference (bool on)
+    {
+        auto f = settingsFile();
+        f.getParentDirectory().createDirectory();
+        auto xml = juce::XmlDocument::parse (f);
+        if (xml == nullptr) xml = std::make_unique<juce::XmlElement> ("LiveVoiceSettings");
+        xml->setAttribute ("gpu", on);
+        xml->writeTo (f);
     }
 
     struct PaletteInit { PaletteInit() { applyPalette (darkPalette); } };

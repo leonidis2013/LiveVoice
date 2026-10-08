@@ -67,6 +67,7 @@ public:
     juce::AudioProcessorParameter* getBypassParameter() const override;
 
     // ---- for the editor ----
+    juce::UndoManager undoManager { 30000, 50 };
     juce::AudioProcessorValueTreeState apvts;
     PresetManager presets;
     ScopeTap inputTap, outputTap;
@@ -83,6 +84,31 @@ public:
     static constexpr int soloNone = -1, soloDeEss = 100;   // 0..5 = EQ band
     std::atomic<int> soloTarget { soloNone };
 
+    // Monitor output (2nd output bus): carries FOH, the dry input (A/B), or the solo.
+    // soloToMain: fallback for hosts without monitor routing - solo replaces the main output.
+    std::atomic<bool> monitorDry { false }, soloToMain { false };
+    bool isMonitorBusActive() const;
+
+    // ---- Suggest (voice capture for the de-esser / EQ assistants), message thread ----
+    enum class CaptureTarget { none = 0, deEss, eq };
+    void startCapture (CaptureTarget t, double seconds);
+    void cancelCapture();
+    CaptureTarget getCaptureTarget() const noexcept { return (CaptureTarget) captureTarget.load(); }
+    float getCaptureProgress() const noexcept;             // 0..1
+    bool captureFinished() const noexcept { return captureState.load() == 2; }
+    std::vector<float> takeCapture();                       // after captureFinished()
+
+    // ---- feedback log, message thread ----
+    struct LogEntry { juce::Time time; float freq; bool fixed; };
+    void pollFeedbackLog();
+    const std::vector<LogEntry>& getFeedbackLog() const { return feedbackLog; }
+    void clearFeedbackLog() { feedbackLog.clear(); }
+
+    // ---- A/B settings compare, message thread ----
+    int getActiveSlot() const { return activeSlot; }
+    void selectSlot (int slot);
+    void copyActiveToOther();
+
     std::atomic<float> inputPeakDb { -100.0f }, outputPeakDb { -100.0f };
     std::atomic<double> currentSampleRate { 48000.0 };
 
@@ -92,10 +118,13 @@ public:
     // UI state that should survive closing the editor / reloading the session
     std::atomic<int> selectedBand { 0 };
     std::atomic<float> uiScale { 0.85f };
+    bool uiScaleRestored = false;                         // false until a session gave us a size
+    int rtaView = 2, rtaSmoothing = 1, historySpan = 1;   // RTA: 0 in, 1 out, 2 both; smoothing idx; span idx
+    bool rtaTilt = false;
 
 private:
     void updateSettings();
-    bool applyEqSolo (juce::AudioBuffer<float>& buffer, int numSamples, int solo);
+    bool applyEqSolo (const juce::AudioBuffer<float>& src, juce::AudioBuffer<float>& dst, int numSamples, int solo);
 
     struct P
     {
@@ -120,6 +149,16 @@ private:
     dsp::SvfCoeffs soloCoeffs;
     std::array<dsp::SvfState, 2> soloState;
     int lastSoloBand = -1;
+    juce::AudioBuffer<float> dryBuf, soloBuf;
+
+    // capture
+    std::vector<float> captureData;
+    std::atomic<int> captureState { 0 }, captureTarget { 0 }, capturePos { 0 };   // state 0 idle, 1 recording, 2 done
+    void feedCapture (const juce::AudioBuffer<float>& b, int numSamples, CaptureTarget at) noexcept;
+
+    std::vector<LogEntry> feedbackLog;
+    std::array<PresetManager::Values, 2> slots;
+    int activeSlot = 0;
 
 
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> inGainSmooth, outGainSmooth;

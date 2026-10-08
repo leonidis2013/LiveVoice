@@ -44,7 +44,17 @@ juce::StringArray PresetManager::getUserNames() const
     return names;
 }
 
-void PresetManager::applyValues (const std::vector<std::pair<juce::String, float>>& values)
+PresetManager::Values PresetManager::captureValues() const
+{
+    Values v;
+    for (auto* p : apvts.processor.getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+            if (isPresetParameter (rp->getParameterID()))
+                v.emplace_back (rp->getParameterID(), rp->convertFrom0to1 (rp->getValue()));
+    return v;
+}
+
+void PresetManager::applyValues (const Values& values)
 {
     for (auto* p : apvts.processor.getParameters())
     {
