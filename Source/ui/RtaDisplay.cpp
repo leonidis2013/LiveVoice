@@ -349,7 +349,7 @@ void RtaDisplay::update()
         soloBanner.setAlpha (soloFlash < 18 ? 1.0f : 0.6f);
         const juce::String what = st == LiveVoiceProcessor::soloDeEss ? "DE-ESSER" : "EQ BAND " + juce::String (st + 1);
         const bool toMain = proc.soloToMain.load();
-        const juce::String txt = "SOLO " + what + (toMain ? " ON MAIN OUT" : " ON MONITOR") + "  -  CLEAR";
+        const juce::String txt = "SOLO " + what + (toMain ? " ON FOH OUTPUT" : " ON OUTPUT 2") + "  -  CLEAR";
         if (soloBanner.getButtonText() != txt) soloBanner.setButtonText (txt);
     }
     updateButtons();

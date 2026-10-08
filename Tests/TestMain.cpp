@@ -29,8 +29,7 @@ namespace
         {
             juce::AudioProcessor::BusesLayout l;
             l.inputBuses.add (juce::AudioChannelSet::mono());
-            l.outputBuses.add (juce::AudioChannelSet::mono());
-            l.outputBuses.add (withMonitor ? juce::AudioChannelSet::mono() : juce::AudioChannelSet::disabled());
+            l.outputBuses.add (withMonitor ? juce::AudioChannelSet::stereo() : juce::AudioChannelSet::mono());
             p.setBusesLayout (l);
             p.setRateAndBufferSizeDetails (fs, blockSize);
             p.prepareToPlay (fs, blockSize);
@@ -424,7 +423,7 @@ static void testSolo()
     check (h2.p.soloTarget.load() == LiveVoiceProcessor::soloNone, "solo is never recalled with a session");
 }
 
-// Runs a 2-channel buffer (ch0 = main in/out, ch1 = monitor out); returns { main, monitor }.
+// Runs a 2-channel buffer (ch1 = mic in / FOH out, ch2 = Monitor out); returns { main, monitor }.
 static std::pair<std::vector<float>, std::vector<float>> runWithMonitor (Harness& h, const std::function<float (int64_t)>& input, double seconds)
 {
     const int64_t total = (int64_t) (seconds * fs);
@@ -455,7 +454,8 @@ static void testMonitorBus()
 
     Harness ref (true); setup (ref);
     const auto [refMain, refMon] = runWithMonitor (ref, twoTones, 1.0);
-    check (ref.p.isMonitorBusActive(), "plugin exposes a Monitor output bus");
+    check (ref.p.isMonitorBusActive() && ref.p.getTotalNumOutputChannels() == 2 && ref.p.getBusCount (false) == 1,
+           "one output with 2 channels: channel 1 FOH, channel 2 Monitor");
 
     Harness h (true); setup (h); h.p.soloTarget = 2;   // solo band 3 (450 Hz)
     const auto [main, mon] = runWithMonitor (h, twoTones, 1.0);

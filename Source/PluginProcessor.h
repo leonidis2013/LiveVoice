@@ -84,7 +84,7 @@ public:
     static constexpr int soloNone = -1, soloDeEss = 100;   // 0..5 = EQ band
     std::atomic<int> soloTarget { soloNone };
 
-    // Monitor output (2nd output bus): carries FOH, the dry input (A/B), or the solo.
+    // Monitor output (output channel 2 when the input is mono): carries FOH, the dry input (A/B), or the solo.
     // soloToMain: fallback for hosts without monitor routing - solo replaces the main output.
     std::atomic<bool> monitorDry { false }, soloToMain { false };
     bool isMonitorBusActive() const;

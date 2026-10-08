@@ -4,8 +4,7 @@
 LiveVoiceProcessor::LiveVoiceProcessor()
     : AudioProcessor (BusesProperties()
                         .withInput  ("Input",  juce::AudioChannelSet::mono(), true)
-                        .withOutput ("Output", juce::AudioChannelSet::mono(), true)
-                        .withOutput ("Monitor", juce::AudioChannelSet::mono(), true)),
+                        .withOutput ("1 FOH + 2 Monitor", juce::AudioChannelSet::stereo(), true)),   // ch 1 = FOH, ch 2 = Monitor
       apvts (*this, &undoManager, "LiveVoiceState", params::createLayout()),
       presets (apvts)
 {
@@ -37,18 +36,17 @@ LiveVoiceProcessor::~LiveVoiceProcessor()
     detector.release();
 }
 
+// Supported layouts:
+//   mono in  -> 2 ch out : channel 1 = FOH (processed), channel 2 = Monitor (solo / A/B)   <- default
+//   mono in  -> mono out : FOH only
+//   stereo in -> stereo out : processed stereo, no monitor channel
 bool LiveVoiceProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto in = layouts.getMainInputChannelSet();
     const auto out = layouts.getMainOutputChannelSet();
-    if (in != out) return false;
-    if (out != juce::AudioChannelSet::mono() && out != juce::AudioChannelSet::stereo()) return false;
-    if (layouts.outputBuses.size() > 1)
-    {
-        const auto mon = layouts.getChannelSet (false, 1);
-        if (! mon.isDisabled() && mon != juce::AudioChannelSet::mono() && mon != juce::AudioChannelSet::stereo()) return false;
-    }
-    return true;
+    if (in == juce::AudioChannelSet::mono())
+        return out == juce::AudioChannelSet::mono() || out == juce::AudioChannelSet::stereo();
+    return in == juce::AudioChannelSet::stereo() && out == juce::AudioChannelSet::stereo();
 }
 
 void LiveVoiceProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -151,7 +149,7 @@ void LiveVoiceProcessor::updateSettings()
 
 bool LiveVoiceProcessor::isMonitorBusActive() const
 {
-    return getBusCount (false) > 1 && getBus (false, 1)->isEnabled() && getBus (false, 1)->getNumberOfChannels() > 0;
+    return getTotalNumInputChannels() == 1 && getTotalNumOutputChannels() >= 2;
 }
 
 void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -159,12 +157,15 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     juce::ScopedNoDenormals noDenormals;
 
     const int numSamples = buffer.getNumSamples();
-    auto main = getBusBuffer (buffer, false, 0);
-    const bool monitorOn = isMonitorBusActive();
+    // processing runs on the input channels (1 = mono voice, 2 = stereo); with a mono input and
+    // 2 output channels, output channel 2 is the Monitor feed
+    const int nIn = juce::jlimit (1, 2, std::min (getTotalNumInputChannels(), buffer.getNumChannels()));
+    const bool monitorOn = isMonitorBusActive() && buffer.getNumChannels() >= 2;
+    juce::AudioBuffer<float> main (buffer.getArrayOfWritePointers(), nIn, numSamples);
     juce::AudioBuffer<float> mon;
-    if (monitorOn) mon = getBusBuffer (buffer, false, 1);
+    if (monitorOn) mon = juce::AudioBuffer<float> (buffer.getArrayOfWritePointers() + 1, 1, numSamples);
 
-    const int nCh = std::min (main.getNumChannels(), 2);
+    const int nCh = nIn;
     if (numSamples == 0 || nCh == 0)
         return;
 

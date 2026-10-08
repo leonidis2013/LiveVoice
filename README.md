@@ -1,4 +1,4 @@
-# LiveVoice — zero-latency vocal processor (VST3)  ·  v0.4.0
+# LiveVoice — zero-latency vocal processor (VST3)  ·  v0.4.1
 
 A single VST3 plugin for live voice: pastor on a face mic, lectern speech, male and female vocals.
 Everything in the audio path is zero latency (the plugin reports 0 samples to the host).
@@ -36,15 +36,17 @@ All gain-reduction meters have dB scales and numeric readouts.
 ## Dynamic EQ — how the dynamic part behaves
 The dynamic cut (or boost) is **proportional**: it grows smoothly as the band gets louder than the threshold instead of switching between "off" and "full range". A 6 dB soft knee eases it in, **Ratio** sets how much it moves per dB over the threshold (2:1 = 1 dB of cut for every 2 dB over), and **Range** is approached gradually rather than hit like a wall. Attack/release smooth the gain itself. The **BAND LEVEL vs THRESHOLD** and **DYNAMIC GAIN** bars in the EQ panel show it working on the selected band, and the handle on the RTA moves with it.
 
-## Monitor output, solo in place, and monitor A/B
-LiveVoice has a second output, **Monitor**. Route it to your headphones (or a cue output). It carries:
-- **FOH** (a copy of the main output) normally,
-- the **solo** whenever you press SOLO in the EQ or de-esser — **FOH is untouched** (tested bit-identical),
-- the **dry input** when **MON: DRY** is on — flip MON: FX / DRY to hear exactly what LiveVoice is doing, without the congregation hearing the switch.
+## Outputs: FOH on channel 1, Monitor on channel 2
+LiveVoice is a **VST3 plugin** (no standalone app). With a mono mic input it has **one output with two channels**:
 
-**LiveProfessor:** its routing lets any plugin output go anywhere, but *plugins inside a chain can't be routed outside it* — so put LiveVoice **outside a chain** (or as the last plugin you route from) to patch the Monitor output to your headphone output. If your setup can't route it, open **…** (settings) and turn on **Solo to main output**: solo then replaces the main output (the old behaviour) — use it only at soundcheck.
+| Output pin | Carries |
+|---|---|
+| **1** (host may call it "Left") | **FOH** — the processed voice |
+| **2** (host may call it "Right") | **Monitor** — a copy of FOH normally; the **solo** while SOLO is on; the **dry input** while **MON: DRY** is on |
 
-Solo is never saved with the session, and a flashing **SOLO … CLEAR** banner sits on the RTA while it's on.
+Wire pin 2 wherever you want it inside LiveProfessor. FOH (pin 1) is never affected by solo or monitor A/B (tested bit-identical). If pin 2 isn't wired, the settings menu (**…**) has **Solo to FOH output** for soundcheck use. Solo is never saved with the session, and a flashing **SOLO … CLEAR** banner sits on the RTA while it's on.
+
+Other layouts: mono in → mono out (FOH only, no monitor channel) and stereo in → stereo out (processed stereo, no monitor channel).
 
 ## Suggest (de-esser and EQ)
 Press **SUGGEST** while the person talks normally; it listens for 20 s (press again to cancel).
@@ -118,7 +120,7 @@ cmake -S . -B build -DLIVEVOICE_BUILD_TESTS=ON
 cmake --build build --target LiveVoiceTests --config Release
 build/Tests/LiveVoiceTests_artefacts/Release/LiveVoiceTests
 ```
-The suite (80 checks) covers everything from the earlier versions (zero latency, proportional dynamic EQ, all HP/LP slopes, narrow de-esser, relative detection, PSE, compressor, limiter, presets, the simulated feedback loop in every mode, false detections, ring-out Learn and recall) plus, new in 0.4.0: **FOH bit-identical while soloing on the Monitor output**, monitor A/B playing the exact dry input, monitor following FOH otherwise, de-esser Suggest finding the sibilance (6.8 kHz on a 7 kHz test voice) and giving moderate reduction, EQ Suggest finding a planted 450 Hz build-up with gentle cuts, the Suggest capture, undo/redo, and A/B switching and session recall.
+The suite (80 checks) covers everything from the earlier versions (zero latency, proportional dynamic EQ, all HP/LP slopes, narrow de-esser, relative detection, PSE, compressor, limiter, presets, the simulated feedback loop in every mode, false detections, ring-out Learn and recall) plus, new in 0.4.0: **FOH (channel 1) bit-identical while soloing on channel 2**, monitor A/B playing the exact dry input, monitor following FOH otherwise, de-esser Suggest finding the sibilance (6.8 kHz on a 7 kHz test voice) and giving moderate reduction, EQ Suggest finding a planted 450 Hz build-up with gentle cuts, the Suggest capture, undo/redo, and A/B switching and session recall.
 
 `LiveVoiceTests --profile` prints CPU per module and per display part.
 `LiveVoiceTests --snapshot out.png [light|toggle]` renders the UI to a PNG.

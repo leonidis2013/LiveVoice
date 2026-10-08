@@ -975,8 +975,8 @@ EqPanel::EqPanel (LiveVoiceProcessor& p) : ModulePanel ("DYNAMIC EQ", theme::eq)
         addAndMakeVisible (btn);
     }
 
-    solo.setTooltip ("Solo: hear only this band's frequency region (taken after the EQ). Use it to find a problem "
-                     "frequency at soundcheck. Careful: this goes to the speakers too. Not saved with the session.");
+    solo.setTooltip ("Solo: hear only this band's frequency region on output 2 (Monitor). Output 1 (FOH) is not affected. "
+                     "Not saved with the session.");
     solo.onClick = [this]
     {
         proc.soloTarget = solo.getToggleState() ? band : LiveVoiceProcessor::soloNone;
@@ -1138,8 +1138,8 @@ DeEssPanel::DeEssPanel (LiveVoiceProcessor& p) : ModulePanel ("DE-ESSER", theme:
     relative.setTooltip ("Relative detection: compares the sibilance with the whole voice instead of a fixed level, "
                          "so a soft talker and a loud talker are de-essed the same. Off = classic absolute threshold.");
     addAndMakeVisible (relative);
-    solo.setTooltip ("Solo: hear exactly what the de-esser listens to, to tune Freq and Width onto the 's'. "
-                     "Careful: this goes to the speakers too. Not saved with the session.");
+    solo.setTooltip ("Solo: hear exactly what the de-esser listens to on output 2 (Monitor), to tune Freq and Width onto the 's'. "
+                     "Output 1 (FOH) is not affected. Not saved with the session.");
     solo.onClick = [this] { proc.soloTarget = solo.getToggleState() ? LiveVoiceProcessor::soloDeEss : LiveVoiceProcessor::soloNone; };
     addAndMakeVisible (solo);
 
@@ -1352,8 +1352,8 @@ HeaderBar::HeaderBar (LiveVoiceProcessor& p) : proc (p)
 
     monitorBtn.setColour (juce::TextButton::buttonOnColourId, theme::warn);
     monitorBtn.setColour (juce::TextButton::textColourOnId, theme::onAccent);
-    monitorBtn.setTooltip ("Monitor A/B: switches the MONITOR output between the processed sound and the dry input, "
-                           "so you can hear what LiveVoice is doing. FOH is never affected.");
+    monitorBtn.setTooltip ("Monitor A/B: switches output 2 (Monitor) between the processed sound and the dry input, "
+                           "so you can hear what LiveVoice is doing. Output 1 (FOH) is never affected.");
     monitorBtn.onClick = [this] { proc.monitorDry = ! proc.monitorDry.load(); };
 
     zoomOut.onClick = [this] { if (onZoom) onZoom (-0.1f); };
@@ -1396,8 +1396,8 @@ void HeaderBar::showSettingsMenu()
 {
     juce::PopupMenu m;
     m.addSectionHeader ("LiveVoice " LIVEVOICE_VERSION);
-    m.addItem (1, "Solo to main output (if the Monitor output isn't routed)", true, proc.soloToMain.load());
-    m.addItem (2, "Monitor output: dry input (A/B)", true, proc.monitorDry.load());
+    m.addItem (1, "Solo to FOH output (only if output 2 isn't wired)", true, proc.soloToMain.load());
+    m.addItem (2, "Output 2 (Monitor): dry input (A/B)", true, proc.monitorDry.load());
    #if LIVEVOICE_USE_OPENGL
     m.addItem (3, "GPU drawing (lower CPU)", true, isGpuOn ? isGpuOn() : false);
    #endif
