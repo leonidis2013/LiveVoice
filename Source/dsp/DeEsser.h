@@ -4,14 +4,15 @@
 #include <atomic>
 #include <juce_audio_basics/juce_audio_basics.h>
 #include "Svf.h"
+#include "LevelHistory.h"
 
-// Zero-latency de-esser. A high-pass sidechain measures sibilance; reduction
-// is either a dynamic high shelf (Split) or full-band gain (Wideband).
-// Detection is either absolute (sibilance level in dBFS) or relative
-// (sibilance level compared with the whole voice), so a quiet talker and a
-// loud talker get the same treatment.
-// It also publishes a short history of sibilance level and gain reduction
-// for the histogram strip.
+// Zero-latency de-esser.
+//   Band mode (default): a narrow band-pass sidechain measures the sibilance and
+//     a dynamic bell cuts only that band (width set by Q).
+//   Shelf mode: high-pass sidechain, dynamic high shelf (all highs).
+//   Wideband mode: high-pass sidechain, whole signal ducks.
+// Detection is absolute (band level in dBFS) or relative (band level compared
+// with the whole voice). Listen (solo) outputs exactly what the detector hears.
 namespace dsp
 {
     class DeEsser
@@ -19,43 +20,51 @@ namespace dsp
     public:
         static constexpr int maxChannels = 2;
         static constexpr int controlInterval = 16;
-        static constexpr int historySize = 1024;
-        static constexpr int historyBlockMs = 10;    // one histogram column per 10 ms
+        static constexpr int historyColumnMs = 30;    // slower scroll: ~20 s across the strip
+        static constexpr float relativeGateDb = -60.0f;   // no reduction on near-silence
+
+        enum Mode { band = 0, shelf, wideband };
 
         struct Settings
         {
-            bool on = true, split = true;
-            float freq = 6000.0f, thresholdDb = -30.0f, rangeDb = 8.0f, releaseMs = 80.0f;
-            bool relative = false;
-            float relThresholdDb = -10.0f;     // sibilance band minus full band, in dB
+            bool on = true, relative = false, listen = false;
+            int mode = band;
+            float freq = 6500.0f, q = 3.0f, thresholdDb = -30.0f, rangeDb = 8.0f, releaseMs = 80.0f;
+            float relThresholdDb = -18.0f;     // sibilance band minus full band, in dB
         };
 
-        static constexpr float relativeGateDb = -60.0f;   // no reduction on near-silence
-
-        struct HistoryPoint { float levelDb; float grDb; };
+        using HistoryPoint = LevelHistory::Point;
 
         void prepare (double sampleRate, int numChannels)
         {
             fs = sampleRate;
-            fullValid = false;
             channels = juce::jlimit (1, maxChannels, numChannels);
-            samplesPerColumn = std::max (1, (int) (fs * historyBlockMs / 1000.0));
+            fullCoeffs.highPass (80.0, 0.707, fs);
+            history.prepare (fs, historyColumnMs);
             reset();
-            for (auto& h : history) { h.level.store (-100.0f); h.gr.store (0.0f); }
         }
 
         void reset()
         {
-            for (auto& s : shelf) s.reset();
-            det.reset();
-            fullDet.reset();
-            envFull = 0.0f;
-            envPow = 0.0f; grDb = 0.0f; counter = 0;
-            colCount = 0; colMaxLevel = -100.0f; colMaxGr = 0.0f;
-            lastFreq = -1.0f;
+            for (auto& s : redState) s.reset();
+            for (auto& s : listenState) s.reset();
+            det.reset(); fullDet.reset();
+            envFull = 0.0f; envPow = 0.0f; grDb = 0.0f; counter = 0;
+            lastFreq = lastQ = -1.0f; lastMode = -1;
         }
 
         void setSettings (const Settings& s) noexcept { settings = s; }
+
+        // Response (dB) of the reduction filter for a given amount of gain reduction, for drawing.
+        static float reductionResponseDb (const Settings& s, float gr, double freq, double sampleRate)
+        {
+            if (gr <= 0.0f) return 0.0f;
+            SvfCoeffs c;
+            if (s.mode == band)        c.bell (s.freq, s.q, -gr, sampleRate);
+            else if (s.mode == shelf)  c.highShelf (s.freq, 0.707, -gr, sampleRate);
+            else                       return -gr;
+            return (float) c.magnitudeDb (freq, sampleRate);
+        }
 
         void process (juce::AudioBuffer<float>& buffer, int numSamples) noexcept
         {
@@ -63,17 +72,18 @@ namespace dsp
             auto* L = buffer.getWritePointer (0);
             auto* R = nCh > 1 ? buffer.getWritePointer (1) : nullptr;
 
-            if (! juce::exactlyEqual (settings.freq, lastFreq))
+            if (! juce::exactlyEqual (settings.freq, lastFreq) || ! juce::exactlyEqual (settings.q, lastQ) || settings.mode != lastMode)
             {
-                detCoeffs.highPass (settings.freq, 0.707, fs);
-                shelfG0 = SvfCoeffs::prewarp (settings.freq, fs);
-                lastFreq = settings.freq;
+                if (settings.mode == band) detCoeffs.bandPass (settings.freq, settings.q, fs);   // 0 dB at centre
+                else                       detCoeffs.highPass (settings.freq, 0.707, fs);
+                redG0 = SvfCoeffs::prewarp (settings.freq, fs);
+                lastFreq = settings.freq; lastQ = settings.q; lastMode = settings.mode;
             }
-            if (! fullValid) { fullCoeffs.highPass (80.0, 0.707, fs); fullValid = true; }
 
             const float att = timeCoeff (0.5f, fs);
             const float rel = timeCoeff (settings.releaseMs, fs);
             const float grSmooth = std::exp (-1.0f / (0.0005f * (float) (fs / controlInterval)));
+            const bool listen = settings.listen;
 
             for (int i = 0; i < numSamples; ++i)
             {
@@ -83,7 +93,8 @@ namespace dsp
                 const float mono = R != nullptr ? 0.5f * (l + r) : l;
                 const float d = det.process (mono, detCoeffs);
                 const float p = d * d;
-                envPow = (p > envPow ? att : rel) * envPow + (1.0f - (p > envPow ? att : rel)) * p;
+                const float ce = p > envPow ? att : rel;
+                envPow = ce * envPow + (1.0f - ce) * p;
                 if (settings.relative)
                 {
                     const float f = fullDet.process (mono, fullCoeffs);
@@ -113,77 +124,55 @@ namespace dsp
                     }
                     grDb = grSmooth * grDb + (1.0f - grSmooth) * target;
 
-                    if (settings.split)
-                        shelfCoeffs.highShelfFromG (shelfG0, 0.707, -grDb);
-                    wideGain = settings.split ? 1.0f : dbToGain (-grDb);
+                    if (settings.mode == band)       redCoeffs.bellFromG (redG0, settings.q, -grDb);
+                    else if (settings.mode == shelf) redCoeffs.highShelfFromG (redG0, 0.707, -grDb);
+                    wideGain = settings.mode == wideband ? dbToGain (-grDb) : 1.0f;
                 }
                 counter = (counter + 1) % controlInterval;
 
-                if (settings.on)
+                if (listen)
                 {
-                    if (settings.split)
-                    {
-                        l = shelf[0].process (l, shelfCoeffs);
-                        if (R != nullptr) r = shelf[1].process (r, shelfCoeffs);
-                    }
-                    else
+                    // solo: hear the sibilance band exactly as the detector does
+                    l = listenState[0].process (l, detCoeffs);
+                    if (R != nullptr) r = listenState[1].process (r, detCoeffs);
+                }
+                else if (settings.on)
+                {
+                    if (settings.mode == wideband)
                     {
                         l *= wideGain;
                         r *= wideGain;
+                    }
+                    else
+                    {
+                        l = redState[0].process (l, redCoeffs);
+                        if (R != nullptr) r = redState[1].process (r, redCoeffs);
                     }
                 }
 
                 L[i] = l;
                 if (R != nullptr) R[i] = r;
 
-                colMaxLevel = std::max (colMaxLevel, levelDb);
-                colMaxGr = std::max (colMaxGr, settings.on ? grDb : 0.0f);
-                if (++colCount >= samplesPerColumn)
-                {
-                    const int w = writeIndex.load (std::memory_order_relaxed);
-                    history[(size_t) w].level.store (colMaxLevel, std::memory_order_relaxed);
-                    history[(size_t) w].gr.store (colMaxGr, std::memory_order_relaxed);
-                    writeIndex.store ((w + 1) % historySize, std::memory_order_release);
-                    colCount = 0; colMaxLevel = -100.0f; colMaxGr = 0.0f;
-                }
+                history.add (levelDb, settings.on ? grDb : 0.0f);
             }
 
             currentGr.store (settings.on ? grDb : 0.0f, std::memory_order_relaxed);
         }
 
-        // Copies the most recent `count` columns, oldest first.
-        void readHistory (HistoryPoint* dest, int count) const noexcept
-        {
-            count = std::min (count, historySize);
-            const int w = writeIndex.load (std::memory_order_acquire);
-            for (int i = 0; i < count; ++i)
-            {
-                const int idx = (w - count + i + historySize) % historySize;
-                dest[i] = { history[(size_t) idx].level.load (std::memory_order_relaxed),
-                            history[(size_t) idx].gr.load (std::memory_order_relaxed) };
-            }
-        }
-
+        void readHistory (HistoryPoint* dest, int count) const noexcept { history.read (dest, count); }
         float getCurrentGainReductionDb() const noexcept { return currentGr.load (std::memory_order_relaxed); }
 
     private:
-        struct Slot { std::atomic<float> level { -100.0f }, gr { 0.0f }; };
-
         Settings settings;
         double fs = 48000.0;
-        int channels = 2, counter = 0;
-        SvfCoeffs detCoeffs, shelfCoeffs, fullCoeffs;
+        int channels = 2, counter = 0, lastMode = -1;
+        SvfCoeffs detCoeffs, redCoeffs, fullCoeffs;
         SvfState det, fullDet;
-        float envFull = 0.0f;
-        bool fullValid = false;
-        std::array<SvfState, maxChannels> shelf;
-        double shelfG0 = 0.4;
-        float envPow = 0.0f, grDb = 0.0f, levelDb = -100.0f, wideGain = 1.0f, lastFreq = -1.0f;
-
-        int samplesPerColumn = 480, colCount = 0;
-        float colMaxLevel = -100.0f, colMaxGr = 0.0f;
-        std::array<Slot, historySize> history;
-        std::atomic<int> writeIndex { 0 };
+        std::array<SvfState, maxChannels> redState, listenState;
+        double redG0 = 0.4;
+        float envFull = 0.0f, envPow = 0.0f, grDb = 0.0f, levelDb = -100.0f, wideGain = 1.0f;
+        float lastFreq = -1.0f, lastQ = -1.0f;
+        LevelHistory history;
         std::atomic<float> currentGr { 0.0f };
     };
 }

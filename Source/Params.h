@@ -50,30 +50,39 @@ namespace params
     inline juce::String bAtt   (int b) { return band (b, "att"); }
     inline juce::String bRel   (int b) { return band (b, "rel"); }
 
-    // Band types. Band 1 offers {Bell, LowShelf, HP12, HP24}; band 6 {Bell, HighShelf, LP12, LP24}.
-    enum class BandType { bell = 0, lowShelf, highShelf, highPass12, highPass24, lowPass12, lowPass24 };
+    // Band types. Band 1 offers Bell, Low Shelf and high-pass 6..48 dB/oct;
+    // band 6 offers Bell, High Shelf and low-pass 6..48 dB/oct.
+    enum class BandType { bell = 0, lowShelf, highShelf, highPass, lowPass };
 
-    inline BandType bandTypeFromChoice (int band, int choice)
+    inline const juce::StringArray band1Choices { "Bell", "Low Shelf", "HP 6 dB/oct", "HP 12 dB/oct", "HP 18 dB/oct",
+                                                  "HP 24 dB/oct", "HP 36 dB/oct", "HP 48 dB/oct" };
+    inline const juce::StringArray band6Choices { "Bell", "High Shelf", "LP 6 dB/oct", "LP 12 dB/oct", "LP 18 dB/oct",
+                                                  "LP 24 dB/oct", "LP 36 dB/oct", "LP 48 dB/oct" };
+    inline constexpr int slopeDbPerOct[] { 6, 12, 18, 24, 36, 48 };
+
+    struct BandShape { BandType type = BandType::bell; int slope = 12; };   // slope only for pass types
+
+    inline BandShape bandShapeFromChoice (int band, int choice)
     {
-        if (band == 0)
-        {
-            const BandType t[] { BandType::bell, BandType::lowShelf, BandType::highPass12, BandType::highPass24 };
-            return t[juce::jlimit (0, 3, choice)];
-        }
-        if (band == numEqBands - 1)
-        {
-            const BandType t[] { BandType::bell, BandType::highShelf, BandType::lowPass12, BandType::lowPass24 };
-            return t[juce::jlimit (0, 3, choice)];
-        }
-        return BandType::bell;
+        const bool first = band == 0, last = band == numEqBands - 1;
+        if (! first && ! last) return {};
+        choice = juce::jlimit (0, 7, choice);
+        if (choice == 0) return {};
+        if (choice == 1) return { first ? BandType::lowShelf : BandType::highShelf, 12 };
+        return { first ? BandType::highPass : BandType::lowPass, slopeDbPerOct[choice - 2] };
     }
 
-    inline bool isPassType (BandType t)
-    {
-        return t == BandType::highPass12 || t == BandType::highPass24 || t == BandType::lowPass12 || t == BandType::lowPass24;
-    }
+    inline BandType bandTypeFromChoice (int band, int choice) { return bandShapeFromChoice (band, choice).type; }
 
-    inline constexpr float defaultBandFreq[numEqBands] { 80.0f, 220.0f, 500.0f, 1500.0f, 4000.0f, 10000.0f };
+    inline bool isPassType (BandType t) { return t == BandType::highPass || t == BandType::lowPass; }
+
+    // Defaults sit on the classic trouble/tone spots of the human voice:
+    // 80 Hz rumble (HPF), 200 Hz boom/proximity, 450 Hz boxiness, 1 kHz nasal honk,
+    // 3 kHz presence/harshness, 10 kHz air (high shelf). Sibilance (5-8 kHz) is the de-esser's job.
+    inline constexpr float defaultBandFreq[numEqBands] { 80.0f, 200.0f, 450.0f, 1000.0f, 3000.0f, 10000.0f };
+    inline constexpr float defaultBandQ[numEqBands]    { 0.71f, 1.0f, 1.4f, 1.4f, 1.2f, 0.71f };
+    inline const char* const bandRoleNames[numEqBands] { "Rumble (HPF)", "Boom / proximity", "Boxiness", "Nasal / honk",
+                                                         "Presence / harshness", "Air" };
 
     // ---- de-esser ----
     inline const juce::String dsOn    { "dsOn" };
@@ -85,8 +94,11 @@ namespace params
 
     inline const juce::String dsRelative { "dsRelative" };    // relative detection on/off
     inline const juce::String dsRelThr { "dsRelThr" };     // threshold used in relative mode
+    inline const juce::String dsQ      { "dsQ" };          // width of the sibilance band
 
-    enum class DsMode { split = 0, wideband };
+    // Band: dynamic bell on just the sibilance band (narrow). Shelf: dynamic high shelf (all highs).
+    // Wideband: whole signal ducks.
+    enum class DsMode { band = 0, shelf, wideband };
 
     // ---- PSE (primary source expander) ----
     inline const juce::String pseOn      { "pseOn" };
@@ -193,17 +205,17 @@ namespace params
         for (int b = 0; b < numEqBands; ++b)
         {
             const String n = "Band " + String (b + 1) + " ";
-            addB (bOn (b), n + "On", b == 0);
-            if (b == 0)                addC (bType (b), n + "Type", { "Bell", "Low Shelf", "High Pass 12", "High Pass 24" }, 2);
-            if (b == numEqBands - 1)   addC (bType (b), n + "Type", { "Bell", "High Shelf", "Low Pass 12", "Low Pass 24" }, 1);
+            addB (bOn (b), n + "On", true);   // all on at 0 dB = transparent, handles ready to use
+            if (b == 0)                addC (bType (b), n + "Type", band1Choices, 5);   // HP 24 dB/oct
+            if (b == numEqBands - 1)   addC (bType (b), n + "Type", band6Choices, 1);   // high shelf
             addF (bFreq (b),  n + "Freq",      freqRange (20.0f, 20000.0f), defaultBandFreq[b], hz);
             addF (bGain (b),  n + "Gain",      { -18.0f, 18.0f, 0.1f }, 0.0f, db);
-            addF (bQ (b),     n + "Q",         timeRange (0.3f, 10.0f, 1.5f), 0.9f, qa);
+            addF (bQ (b),     n + "Q",         timeRange (0.3f, 10.0f, 1.5f), defaultBandQ[b], qa);
             addB (bDyn (b),   n + "Dynamic", false);
             addF (bThr (b),   n + "Threshold", { -60.0f, 0.0f, 0.1f }, -30.0f, db);
             addF (bRange (b), n + "Range",     { -18.0f, 18.0f, 0.1f }, -6.0f, db);
-            addF (bRatio (b), n + "Ratio",     timeRange (1.0f, 10.0f, 3.0f), 3.0f, rat);
-            addF (bAtt (b),   n + "Attack",    timeRange (0.5f, 200.0f, 15.0f), 5.0f, ms);
+            addF (bRatio (b), n + "Ratio",     timeRange (1.0f, 10.0f, 3.0f), 2.0f, rat);
+            addF (bAtt (b),   n + "Attack",    timeRange (0.5f, 200.0f, 15.0f), 10.0f, ms);
             addF (bRel (b),   n + "Release",   timeRange (10.0f, 2000.0f, 200.0f), 120.0f, ms);
         }
 
@@ -212,10 +224,11 @@ namespace params
         addF (dsFreq,  "De-Ess Freq", freqRange (2000.0f, 12000.0f), 6000.0f, hz);
         addF (dsThr,   "De-Ess Threshold", { -60.0f, 0.0f, 0.1f }, -30.0f, db);
         addF (dsRange, "De-Ess Range", { 0.0f, 24.0f, 0.1f }, 8.0f, db);
-        addC (dsMode,  "De-Ess Mode", { "Split", "Wideband" }, 0);
+        addC (dsMode,  "De-Ess Mode", { "Band (narrow)", "Shelf (all highs)", "Wideband" }, 0);
+        addF (dsQ,     "De-Ess Width", timeRange (1.0f, 8.0f, 3.0f), 3.0f, qa);
         addF (dsRel,   "De-Ess Release", timeRange (20.0f, 500.0f, 80.0f), 80.0f, ms);
         addB (dsRelative,  "De-Ess Relative Detection", false);
-        addF (dsRelThr, "De-Ess Relative Threshold", { -30.0f, 6.0f, 0.1f }, -10.0f, db);
+        addF (dsRelThr, "De-Ess Relative Threshold", { -40.0f, 6.0f, 0.1f }, -18.0f, db);
 
         // PSE
         addB (pseOn,      "PSE On", false);

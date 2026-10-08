@@ -5,30 +5,111 @@
 // One place for the colour system and the custom look-and-feel.
 namespace theme
 {
-    inline const juce::Colour bg        { 0xff0d1015 };
-    inline const juce::Colour panel     { 0xff151a21 };
-    inline const juce::Colour panelHi   { 0xff1b2129 };
-    inline const juce::Colour border    { 0xff252c36 };
-    inline const juce::Colour grid      { 0xff1e252e };
-    inline const juce::Colour text      { 0xffd8dee6 };
-    inline const juce::Colour textDim   { 0xff7c8794 };
-    inline const juce::Colour textFaint { 0xff4c5561 };
+    // Live palette. Everything paints from these at paint time, so switching
+    // theme is: apply a palette, remap colours already baked into widgets, repaint.
+    inline juce::Colour bg, panel, panelHi, border, grid, text, textDim, textFaint, onAccent;
+    inline juce::Colour eq, feedback, deess, pse, comp, input, output, good, warn, danger;
+    inline juce::Colour bandColours[6];
 
-    inline const juce::Colour eq        { 0xff2ec4b6 };   // teal
-    inline const juce::Colour feedback  { 0xffff8a3d };   // orange
-    inline const juce::Colour deess     { 0xffa78bfa };   // violet
-    inline const juce::Colour pse       { 0xff8bd450 };   // green
-    inline const juce::Colour comp      { 0xfff6c453 };   // amber
-    inline const juce::Colour input     { 0xff5b6676 };
-    inline const juce::Colour output    { 0xff4c8dff };
-    inline const juce::Colour good      { 0xff3ecf6e };
-    inline const juce::Colour warn      { 0xfff2c94c };
-    inline const juce::Colour danger    { 0xffef4c4c };
-
-    inline const juce::Colour bandColours[6] {
-        juce::Colour (0xff2ec4b6), juce::Colour (0xff4cc9f0), juce::Colour (0xff7bdff2),
-        juce::Colour (0xff80ed99), juce::Colour (0xfff7d070), juce::Colour (0xfff4978e)
+    struct Palette
+    {
+        juce::uint32 bg, panel, panelHi, border, grid, text, textDim, textFaint, onAccent;
+        juce::uint32 eq, feedback, deess, pse, comp, input, output, good, warn, danger;
+        juce::uint32 bands[6];
     };
+
+    inline constexpr Palette darkPalette {
+        0xff0d1015, 0xff151a21, 0xff1b2129, 0xff252c36, 0xff1e252e, 0xffd8dee6, 0xff7c8794, 0xff4c5561, 0xff0d1015,
+        0xff2ec4b6, 0xffff8a3d, 0xffa78bfa, 0xff8bd450, 0xfff6c453, 0xff5b6676, 0xff4c8dff, 0xff3ecf6e, 0xfff2c94c, 0xffef4c4c,
+        { 0xff2ec4b6, 0xff4cc9f0, 0xff7bdff2, 0xff80ed99, 0xfff7d070, 0xfff4978e } };
+
+    // Light: soft grey page, white cards, accents darkened for contrast on white.
+    inline constexpr Palette lightPalette {
+        0xffe9edf2, 0xfffbfcfd, 0xfff0f3f6, 0xffd3dae3, 0xffe3e8ee, 0xff18202b, 0xff586474, 0xff97a1ae, 0xffffffff,
+        0xff0f9488, 0xffe0661a, 0xff7553e0, 0xff4b9b25, 0xffc98a0a, 0xff9aa3af, 0xff2563d6, 0xff23a056, 0xffcf9a10, 0xffd63232,
+        { 0xff0f9488, 0xff1b8fc4, 0xff3a9fb5, 0xff3f9d55, 0xffc08a10, 0xffd2584c } };
+
+    inline bool lightMode = false;
+
+    inline Palette currentPalette()
+    {
+        auto u = [] (juce::Colour c) { return c.getARGB(); };
+        return { u (bg), u (panel), u (panelHi), u (border), u (grid), u (text), u (textDim), u (textFaint), u (onAccent),
+                 u (eq), u (feedback), u (deess), u (pse), u (comp), u (input), u (output), u (good), u (warn), u (danger),
+                 { u (bandColours[0]), u (bandColours[1]), u (bandColours[2]), u (bandColours[3]), u (bandColours[4]), u (bandColours[5]) } };
+    }
+
+    inline void applyPalette (const Palette& p)
+    {
+        using C = juce::Colour;
+        bg = C (p.bg); panel = C (p.panel); panelHi = C (p.panelHi); border = C (p.border); grid = C (p.grid);
+        text = C (p.text); textDim = C (p.textDim); textFaint = C (p.textFaint); onAccent = C (p.onAccent);
+        eq = C (p.eq); feedback = C (p.feedback); deess = C (p.deess); pse = C (p.pse); comp = C (p.comp);
+        input = C (p.input); output = C (p.output); good = C (p.good); warn = C (p.warn); danger = C (p.danger);
+        for (int i = 0; i < 6; ++i) bandColours[i] = C (p.bands[i]);
+    }
+
+    inline void setLightMode (bool light)
+    {
+        lightMode = light;
+        applyPalette (light ? lightPalette : darkPalette);
+    }
+
+    // Swaps any colour from `from` baked into widgets (labels, buttons, sliders...) for its counterpart in `to`.
+    inline void remapColours (juce::Component& root, const Palette& from, const Palette& to)
+    {
+        const juce::uint32* a = &from.bg;
+        const juce::uint32* b = &to.bg;
+        constexpr int n = (int) (sizeof (Palette) / sizeof (juce::uint32));
+        static const int ids[] {
+            juce::Label::textColourId, juce::Label::backgroundColourId,
+            juce::TextButton::buttonColourId, juce::TextButton::buttonOnColourId,
+            juce::TextButton::textColourOffId, juce::TextButton::textColourOnId,
+            juce::Slider::rotarySliderFillColourId, juce::Slider::textBoxTextColourId,
+            juce::ComboBox::backgroundColourId, juce::ComboBox::textColourId };
+
+        std::function<void (juce::Component&)> visit = [&] (juce::Component& c)
+        {
+            for (int id : ids)
+                if (c.isColourSpecified (id))
+                {
+                    const auto argb = c.findColour (id).getARGB();
+                    for (int i = 0; i < n; ++i)
+                        if (a[i] == argb) { c.setColour (id, juce::Colour (b[i])); break; }
+                }
+            for (auto* child : c.getChildren()) visit (*child);
+        };
+        visit (root);
+    }
+
+    // Theme choice is remembered across sessions and plugin instances.
+    inline juce::File settingsFile()
+    {
+        auto base = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+       #if JUCE_MAC
+        base = base.getChildFile ("Application Support");
+       #endif
+        return base.getChildFile ("LiveVoice").getChildFile ("settings.xml");
+    }
+
+    inline bool loadLightModePreference()
+    {
+        if (auto xml = juce::XmlDocument::parse (settingsFile()))
+            return xml->getBoolAttribute ("lightMode", false);
+        return false;
+    }
+
+    inline void saveLightModePreference (bool light)
+    {
+        auto f = settingsFile();
+        f.getParentDirectory().createDirectory();
+        juce::XmlElement xml ("LiveVoiceSettings");
+        xml.setAttribute ("lightMode", light);
+        xml.writeTo (f);
+    }
+
+    struct PaletteInit { PaletteInit() { applyPalette (darkPalette); } };
+    inline PaletteInit paletteInit;
 
     inline juce::Font font (float size, bool bold = false)
     {
@@ -38,7 +119,9 @@ namespace theme
     class LookAndFeel : public juce::LookAndFeel_V4
     {
     public:
-        LookAndFeel()
+        LookAndFeel() { applyColours(); }
+
+        void applyColours()
         {
             setColour (juce::ResizableWindow::backgroundColourId, bg);
             setColour (juce::Slider::textBoxTextColourId, text);
@@ -53,10 +136,10 @@ namespace theme
             setColour (juce::PopupMenu::backgroundColourId, panelHi);
             setColour (juce::PopupMenu::textColourId, text);
             setColour (juce::PopupMenu::highlightedBackgroundColourId, border);
-            setColour (juce::PopupMenu::highlightedTextColourId, juce::Colours::white);
+            setColour (juce::PopupMenu::highlightedTextColourId, text);
             setColour (juce::TextButton::buttonColourId, panelHi);
             setColour (juce::TextButton::textColourOffId, text);
-            setColour (juce::TextButton::textColourOnId, bg);
+            setColour (juce::TextButton::textColourOnId, onAccent);
             setColour (juce::TextEditor::backgroundColourId, panelHi);
             setColour (juce::TextEditor::outlineColourId, border);
             setColour (juce::TextEditor::textColourId, text);

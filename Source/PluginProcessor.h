@@ -79,13 +79,9 @@ public:
     dsp::PrimarySourceExpander pse;
     dsp::VocalCompressor comp;
 
-    // Gain-before-feedback from the ring-out: plugin gain (in + out + comp makeup)
-    // at the first ring vs the highest gain that then held stable for 4 s.
-    // NaN = not measured yet.
-    std::atomic<float> gbfFirstRingGain { std::numeric_limits<float>::quiet_NaN() };
-    std::atomic<float> gbfBestStableGain { std::numeric_limits<float>::quiet_NaN() };
-    float getGbfGainedDb() const;            // NaN until measured
-    void resetGbf();                         // message thread
+    // Solo / listen. Never saved or automated, so a session can't come back soloed.
+    static constexpr int soloNone = -1, soloDeEss = 100;   // 0..5 = EQ band
+    std::atomic<int> soloTarget { soloNone };
 
     std::atomic<float> inputPeakDb { -100.0f }, outputPeakDb { -100.0f };
     std::atomic<double> currentSampleRate { 48000.0 };
@@ -99,7 +95,7 @@ public:
 
 private:
     void updateSettings();
-    void updateGbfTracker (int numSamples);
+    bool applyEqSolo (juce::AudioBuffer<float>& buffer, int numSamples, int solo);
 
     struct P
     {
@@ -113,7 +109,7 @@ private:
                       std::atomic<float>* att; std::atomic<float>* rel; };
         std::array<Band, params::numEqBands> bands;
         std::atomic<float>* dsOn; std::atomic<float>* dsFreq; std::atomic<float>* dsThr; std::atomic<float>* dsRange; std::atomic<float>* dsMode; std::atomic<float>* dsRel;
-        std::atomic<float>* dsRelative; std::atomic<float>* dsRelThr;
+        std::atomic<float>* dsRelative; std::atomic<float>* dsRelThr; std::atomic<float>* dsQ;
         std::atomic<float>* pseOn; std::atomic<float>* pseThr; std::atomic<float>* pseRange; std::atomic<float>* pseAttack;
         std::atomic<float>* pseHold; std::atomic<float>* pseRelease; std::atomic<float>* pseScHp; std::atomic<float>* pseScLp;
         std::atomic<float>* compOn; std::atomic<float>* compThr; std::atomic<float>* compRatio; std::atomic<float>* compKnee;
@@ -121,16 +117,10 @@ private:
         std::atomic<float>* compMix; std::atomic<float>* compScHp;
     } p {};
 
-    // ring-out GBF tracking (audio thread)
-    struct GbfTracker
-    {
-        bool wasLearning = false;
-        int lastDetectionCount = 0;
-        int64_t samplesSinceDetection = 0, samplesGainStable = 0;
-        float stableRef = 0.0f;
-        float first = std::numeric_limits<float>::quiet_NaN(), best = std::numeric_limits<float>::quiet_NaN();
-    } gbf;
-    std::atomic<bool> gbfResetRequest { false };
+    dsp::SvfCoeffs soloCoeffs;
+    std::array<dsp::SvfState, 2> soloState;
+    int lastSoloBand = -1;
+
 
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> inGainSmooth, outGainSmooth;
     std::vector<float> monoScratch;

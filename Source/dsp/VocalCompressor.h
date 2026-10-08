@@ -3,6 +3,7 @@
 #include <atomic>
 #include <juce_audio_basics/juce_audio_basics.h>
 #include "Svf.h"
+#include "LevelHistory.h"
 
 // Transparent, smooth vocal compressor (zero latency, feed-forward).
 //
@@ -32,6 +33,7 @@ namespace dsp
             fs = sampleRate;
             channels = juce::jlimit (1, 2, numChannels);
             lastHp = -1.0f;
+            history.prepare (fs, 30);
             reset();
         }
 
@@ -41,6 +43,7 @@ namespace dsp
             envPow = 0.0f; grSmooth = 0.0f; grSlow = 0.0f;
             makeupSmoothed = 0.0f;
             currentGr.store (0.0f);
+            inputLevel.store (-100.0f);
         }
 
         void setSettings (const Settings& s) noexcept { settings = s; }
@@ -60,13 +63,6 @@ namespace dsp
 
         void process (juce::AudioBuffer<float>& buffer, int numSamples) noexcept
         {
-            if (! settings.on)
-            {
-                currentGr.store (0.0f, std::memory_order_relaxed);
-                grSmooth = grSlow = 0.0f;
-                return;
-            }
-
             if (! juce::exactlyEqual (settings.scHpHz, lastHp)) { scCoeffs.highPass (settings.scHpHz, 0.707, fs); lastHp = settings.scHpHz; }
 
             const int nCh = std::min (channels, buffer.getNumChannels());
@@ -74,6 +70,26 @@ namespace dsp
             auto* R = nCh > 1 ? buffer.getWritePointer (1) : nullptr;
 
             const float rmsCoeff = timeCoeff (5.0f, fs);
+
+            if (! settings.on)
+            {
+                // keep metering the input so the graphs help set the threshold before switching on
+                float maxX = -100.0f;
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    const float mono = R != nullptr ? 0.5f * (L[i] + R[i]) : L[i];
+                    const float s = sc.process (mono, scCoeffs);
+                    envPow = rmsCoeff * envPow + (1.0f - rmsCoeff) * s * s;
+                    const float xDb = 10.0f * std::log10 (envPow + 1.0e-12f) + 3.0103f;
+                    maxX = std::max (maxX, xDb);
+                    history.add (xDb, 0.0f);
+                }
+                currentGr.store (0.0f, std::memory_order_relaxed);
+                inputLevel.store (maxX, std::memory_order_relaxed);
+                grSmooth = grSlow = 0.0f;
+                return;
+            }
+
             const float aA = timeCoeff (settings.attackMs, fs);
             const float aRbase = timeCoeff (settings.releaseMs, fs);
             const float aRfast = timeCoeff (settings.releaseMs * 0.5f, fs);
@@ -81,7 +97,7 @@ namespace dsp
             const float aSlowTrack = timeCoeff (800.0f, fs);
             const float aMakeup = timeCoeff (20.0f, fs);
             const float mix = juce::jlimit (0.0f, 1.0f, settings.mix);
-            float maxGr = 0.0f;
+            float maxGr = 0.0f, maxX = -100.0f;
 
             for (int i = 0; i < numSamples; ++i)
             {
@@ -103,6 +119,8 @@ namespace dsp
                 grSmooth = target > grSmooth ? aA * grSmooth + (1.0f - aA) * target
                                              : aR * grSmooth + (1.0f - aR) * target;
                 maxGr = std::max (maxGr, grSmooth);
+                maxX = std::max (maxX, xDb);
+                history.add (xDb, grSmooth);
 
                 makeupSmoothed = aMakeup * makeupSmoothed + (1.0f - aMakeup) * settings.makeupDb;
                 const float g = dbToGain (makeupSmoothed - grSmooth);
@@ -113,9 +131,12 @@ namespace dsp
             }
 
             currentGr.store (maxGr, std::memory_order_relaxed);
+            inputLevel.store (maxX, std::memory_order_relaxed);
         }
 
         float getGainReductionDb() const noexcept { return currentGr.load (std::memory_order_relaxed); }
+        float getInputLevelDb() const noexcept    { return inputLevel.load (std::memory_order_relaxed); }
+        void readHistory (LevelHistory::Point* dest, int count) const noexcept { history.read (dest, count); }
 
     private:
         Settings settings;
@@ -125,6 +146,7 @@ namespace dsp
         SvfState sc;
         float lastHp = -1.0f;
         float envPow = 0.0f, grSmooth = 0.0f, grSlow = 0.0f, makeupSmoothed = 0.0f;
-        std::atomic<float> currentGr { 0.0f };
+        std::atomic<float> currentGr { 0.0f }, inputLevel { -100.0f };
+        LevelHistory history;
     };
 }

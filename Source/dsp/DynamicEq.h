@@ -8,6 +8,11 @@
 
 // Six-band zero-latency dynamic EQ. Each band is a static EQ curve plus an
 // optional dynamic gain driven by a band-limited detector (no look-ahead).
+//
+// The dynamic gain is proportional to how far the band's level is above the
+// threshold: a soft knee eases it in, the ratio sets how much it moves per dB,
+// and Range is approached gradually (not a hard stop), so the band follows the
+// voice smoothly instead of switching between "off" and "full range".
 namespace dsp
 {
     class DynamicEq
@@ -15,16 +20,36 @@ namespace dsp
     public:
         static constexpr int numBands = params::numEqBands;
         static constexpr int maxChannels = 2;
-        static constexpr int controlInterval = 16;   // samples between coefficient updates
+        static constexpr int maxStages = 4;            // up to 48 dB/oct
+        static constexpr int controlInterval = 16;     // samples between coefficient updates
+        static constexpr float kneeDb = 6.0f;
 
         struct BandSettings
         {
             bool on = false;
             params::BandType type = params::BandType::bell;
+            int slope = 12;                            // dB/oct, pass types only
             float freq = 1000.0f, gainDb = 0.0f, q = 1.0f;
             bool dynamic = false;
-            float thresholdDb = -30.0f, rangeDb = -6.0f, ratio = 3.0f, attackMs = 5.0f, releaseMs = 120.0f;
+            float thresholdDb = -30.0f, rangeDb = -6.0f, ratio = 2.0f, attackMs = 10.0f, releaseMs = 120.0f;
         };
+
+        // Dynamic gain (dB, signed like Range) for a detector level. Proportional with a soft knee;
+        // the range is reached asymptotically so there is no audible "hit the stop" point.
+        static float dynamicGainFor (float levelDb, const BandSettings& s) noexcept
+        {
+            const float slope = 1.0f - 1.0f / std::max (1.0f, s.ratio);
+            const float d = levelDb - s.thresholdDb;
+            float amount;
+            if (2.0f * d <= -kneeDb)      amount = 0.0f;
+            else if (2.0f * d < kneeDb)   amount = slope * (d + kneeDb * 0.5f) * (d + kneeDb * 0.5f) / (2.0f * kneeDb);
+            else                          amount = slope * d;
+
+            const float range = std::abs (s.rangeDb);
+            if (range < 0.01f) return 0.0f;
+            const float limited = range * std::tanh (amount / range);
+            return s.rangeDb >= 0.0f ? limited : -limited;
+        }
 
         void prepare (double sampleRate, int numChannels)
         {
@@ -46,14 +71,17 @@ namespace dsp
                 b.smoothedGain = b.settings.gainDb;
                 b.smoothedQ = b.settings.q;
                 b.initialised = false;
+                b.detValid = false;
                 b.displayDynGain.store (0.0f);
+                b.displayLevel.store (-100.0f);
             }
             counter = 0;
         }
 
         void setBand (int index, const BandSettings& s) noexcept { bands[(size_t) index].settings = s; }
 
-        float getDynamicGainDb (int index) const noexcept { return bands[(size_t) index].displayDynGain.load (std::memory_order_relaxed); }
+        float getDynamicGainDb (int index) const noexcept   { return bands[(size_t) index].displayDynGain.load (std::memory_order_relaxed); }
+        float getDetectorLevelDb (int index) const noexcept { return bands[(size_t) index].displayLevel.load (std::memory_order_relaxed); }
 
         void process (juce::AudioBuffer<float>& buffer, int numSamples) noexcept
         {
@@ -81,9 +109,7 @@ namespace dsp
                     {
                         const float mono = R != nullptr ? 0.5f * (l + r) : l;
                         const float d = b.det.process (mono, b.detCoeffs);
-                        const float p = d * d;
-                        const float c = p > b.envPow ? b.attCoeff : b.relCoeff;
-                        b.envPow = c * b.envPow + (1.0f - c) * p;
+                        b.envPow = b.rmsCoeff * b.envPow + (1.0f - b.rmsCoeff) * d * d;
                     }
 
                     for (int st = 0; st < b.numStages; ++st)
@@ -98,42 +124,57 @@ namespace dsp
             }
         }
 
-        // Coefficients describing the band as the UI should draw it.
+        // Coefficients describing the band (used for audio and for drawing).
         static void designBand (const BandSettings& s, double freq, double q, double gainDb, double sampleRate,
-                                SvfCoeffs out[2], int& numStages)
+                                SvfCoeffs out[maxStages], int& numStages)
         {
             using BT = params::BandType;
             numStages = 1;
             switch (s.type)
             {
-                case BT::bell:       out[0].bell (freq, q, gainDb, sampleRate); break;
-                case BT::lowShelf:   out[0].lowShelf (freq, juce::jlimit (0.3, 2.0, q), gainDb, sampleRate); break;
-                case BT::highShelf:  out[0].highShelf (freq, juce::jlimit (0.3, 2.0, q), gainDb, sampleRate); break;
-                case BT::highPass12: out[0].highPass (freq, juce::jlimit (0.3, 2.0, q), sampleRate); break;
-                case BT::lowPass12:  out[0].lowPass (freq, juce::jlimit (0.3, 2.0, q), sampleRate); break;
-                case BT::highPass24:
-                    out[0].highPass (freq, 0.54119610, sampleRate); out[1].highPass (freq, 1.30656296, sampleRate); numStages = 2; break;
-                case BT::lowPass24:
-                    out[0].lowPass (freq, 0.54119610, sampleRate);  out[1].lowPass (freq, 1.30656296, sampleRate);  numStages = 2; break;
+                case BT::bell:      out[0].bell (freq, q, gainDb, sampleRate); return;
+                case BT::lowShelf:  out[0].lowShelf (freq, juce::jlimit (0.3, 2.0, q), gainDb, sampleRate); return;
+                case BT::highShelf: out[0].highShelf (freq, juce::jlimit (0.3, 2.0, q), gainDb, sampleRate); return;
+                case BT::highPass:
+                case BT::lowPass:   break;
             }
+
+            const bool hp = s.type == BT::highPass;
+            auto second = [&] (SvfCoeffs& c, double qq) { if (hp) c.highPass (freq, qq, sampleRate); else c.lowPass (freq, qq, sampleRate); };
+            auto first  = [&] (SvfCoeffs& c)            { if (hp) c.highPass1 (freq, sampleRate);   else c.lowPass1 (freq, sampleRate); };
+
+            switch (s.slope)   // Butterworth cascades
+            {
+                case 6:  first (out[0]); break;
+                case 18: first (out[0]); second (out[1], 1.0); numStages = 2; break;
+                case 24: second (out[0], 0.54119610); second (out[1], 1.30656296); numStages = 2; break;
+                case 36: second (out[0], 0.51763809); second (out[1], 0.70710678); second (out[2], 1.93185165); numStages = 3; break;
+                case 48: second (out[0], 0.50979558); second (out[1], 0.60134489); second (out[2], 0.89997622);
+                         second (out[3], 2.56291545); numStages = 4; break;
+                default: second (out[0], juce::jlimit (0.5, 2.0, q)); break;   // 12 dB/oct, resonance from Q
+            }
+        }
+
+        static bool usesQ (const BandSettings& s) noexcept
+        {
+            return ! params::isPassType (s.type) || s.slope == 12;
         }
 
     private:
         struct Band
         {
             BandSettings settings;
-            std::array<SvfCoeffs, 2> coeffs;
-            std::array<std::array<SvfState, maxChannels>, 2> state;
+            std::array<SvfCoeffs, maxStages> coeffs;
+            std::array<std::array<SvfState, maxChannels>, maxStages> state;
             SvfCoeffs detCoeffs;
             SvfState det;
             int numStages = 1;
             bool active = false, detecting = false, initialised = false;
-            float envPow = 0.0f, dynGainDb = 0.0f;
-            float attCoeff = 0.0f, relCoeff = 0.0f;
+            float envPow = 0.0f, dynGainDb = 0.0f, rmsCoeff = 0.0f;
             float smoothedFreq = 1000.0f, smoothedGain = 0.0f, smoothedQ = 1.0f;
             BandSettings lastDetSettings;
             bool detValid = false;
-            std::atomic<float> displayDynGain { 0.0f };
+            std::atomic<float> displayDynGain { 0.0f }, displayLevel { -100.0f };
         };
 
         void initBand (Band& b)
@@ -152,6 +193,7 @@ namespace dsp
             {
                 b.dynGainDb = 0.0f;
                 b.displayDynGain.store (0.0f, std::memory_order_relaxed);
+                b.displayLevel.store (-100.0f, std::memory_order_relaxed);
                 return;
             }
 
@@ -167,47 +209,48 @@ namespace dsp
             if (b.detecting)
             {
                 // detector filter follows the band
-                if (! b.detValid || ! juce::exactlyEqual (b.lastDetSettings.freq, s.freq) || ! juce::exactlyEqual (b.lastDetSettings.q, s.q) || b.lastDetSettings.type != s.type)
+                if (! b.detValid || ! juce::exactlyEqual (b.lastDetSettings.freq, s.freq)
+                      || ! juce::exactlyEqual (b.lastDetSettings.q, s.q) || b.lastDetSettings.type != s.type)
                 {
                     using BT = params::BandType;
                     if (s.type == BT::lowShelf)       b.detCoeffs.lowPass (s.freq, 0.707, fs);
                     else if (s.type == BT::highShelf) b.detCoeffs.highPass (s.freq, 0.707, fs);
                     else                              b.detCoeffs.bandPass (s.freq, std::max (0.5f, s.q), fs);
+                    // RMS window: at least ~2 cycles of the band, so low bands don't ripple (distort)
+                    b.rmsCoeff = timeCoeff (std::max (5.0f, 2000.0f / std::max (20.0f, s.freq)), fs);
                     b.lastDetSettings = s;
                     b.detValid = true;
                 }
 
-                b.attCoeff = timeCoeff (s.attackMs, fs);
-                b.relCoeff = timeCoeff (s.releaseMs, fs);
+                const float levelDb = 10.0f * std::log10 (std::max (b.envPow, 1.0e-12f)) + 3.0103f;   // sine-peak referenced
+                const float target = dynamicGainFor (levelDb, s);
 
-                // sine-peak referenced level: 10log10(meanSquare) + 3 dB
-                const float levelDb = 10.0f * std::log10 (std::max (b.envPow, 1.0e-12f)) + 3.0103f;
-                const float over = levelDb - s.thresholdDb;
-                float target = 0.0f;
-                if (over > 0.0f)
-                {
-                    const float amount = over * (1.0f - 1.0f / std::max (1.0f, s.ratio));
-                    target = s.rangeDb >= 0.0f ? std::min (amount, s.rangeDb) : std::max (-amount, s.rangeDb);
-                }
-                // 1 ms de-zipper (attack/release already shape the envelope)
-                const float z = std::exp (-1.0f / (0.001f * (float) ctlFs));
-                b.dynGainDb = z * b.dynGainDb + (1.0f - z) * target;
+                // attack = moving away from 0 dB, release = returning toward it (dB domain, smooth)
+                const bool engaging = std::abs (target) > std::abs (b.dynGainDb);
+                const float t = engaging ? s.attackMs : s.releaseMs;
+                const float c = std::exp (-1.0f / (std::max (0.1f, t) * 0.001f * (float) ctlFs));
+                b.dynGainDb = c * b.dynGainDb + (1.0f - c) * target;
+                b.displayLevel.store (levelDb, std::memory_order_relaxed);
             }
             else
             {
                 b.envPow = 0.0f;
                 b.dynGainDb = 0.0f;
+                b.displayLevel.store (-100.0f, std::memory_order_relaxed);
             }
 
             b.displayDynGain.store (b.dynGainDb, std::memory_order_relaxed);
 
-            SvfCoeffs c[2];
+            SvfCoeffs c[maxStages];
             int stages = 1;
             designBand (s, b.smoothedFreq, b.smoothedQ, b.smoothedGain + b.dynGainDb, fs, c, stages);
-            if (stages != b.numStages)
-                for (auto& st : b.state[1]) st.reset();
-            b.coeffs[0] = c[0];
-            b.coeffs[1] = c[1];
+            for (int st = 0; st < maxStages; ++st)
+            {
+                const bool structureChanged = st >= b.numStages || c[st].order != b.coeffs[(size_t) st].order;
+                if (st < stages && structureChanged)
+                    for (auto& x : b.state[(size_t) st]) x.reset();
+                b.coeffs[(size_t) st] = c[st];
+            }
             b.numStages = stages;
         }
 

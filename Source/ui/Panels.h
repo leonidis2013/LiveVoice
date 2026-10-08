@@ -36,67 +36,108 @@ struct Combo : public juce::ComboBox
     std::unique_ptr<ComboAttachment> attachment;
 };
 
-class LevelMeter : public juce::Component
-{
-public:
-    explicit LevelMeter (std::atomic<float>& source) : src (source) {}
-    void update();
-    void paint (juce::Graphics&) override;
-private:
-    std::atomic<float>& src;
-    float level = -100.0f, peakHold = -100.0f;
-    int holdFrames = 0;
-};
-
+// Gain-reduction meter with a dB scale. Vertical meters hang from the top with
+// tick labels; horizontal ones fill from the left and print the value.
 class GainReductionMeter : public juce::Component
 {
 public:
-    GainReductionMeter (juce::Colour c, float maxDb) : colour (c), maxReduction (maxDb) {}
+    GainReductionMeter (const juce::Colour& c, float maxDb) : colour (&c), maxReduction (maxDb) {}
     void setValue (float grDb) { if (std::abs (grDb - value) > 0.05f) { value = grDb; repaint(); } }
     void paint (juce::Graphics&) override;
 private:
-    juce::Colour colour;
+    const juce::Colour* colour;
     float maxReduction, value = 0.0f;
+};
+
+// Vertical input/output peak meters beside the RTA, with a colour-zoned scale
+// that shows the target range for healthy gain staging.
+class IoMeters : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    explicit IoMeters (LiveVoiceProcessor& p);
+    void update();
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;   // click resets peak hold
+
+    static constexpr float minDb = -60.0f, targetLo = -18.0f, targetHi = -6.0f, warnDb = -3.0f;
+
+private:
+    struct Channel { float level = -100.0f, peak = -100.0f; int hold = 0; };
+    void ballistics (Channel& c, float v);
+    LiveVoiceProcessor& proc;
+    Channel in, out;
 };
 
 // Base for the bottom panels: rounded card with a title, accent and power button.
 class ModulePanel : public juce::Component
 {
 public:
-    ModulePanel (const juce::String& title, juce::Colour accent);
+    ModulePanel (const juce::String& title, const juce::Colour& accent);
     void paint (juce::Graphics&) override;
     juce::Rectangle<int> getContentBounds() const;
     void layoutHeader();
 
 protected:
     juce::String title;
-    juce::Colour accent;
+    const juce::Colour& accent;
     ToggleBtn power { "ON", accent };
 };
 
-// ---------------------------------------------------------------- de-esser histogram
-class DeEssHistogram : public juce::Component
+// ---------------------------------------------------------------- history strips
+// Scrolling history: level bars from the bottom, gain reduction hanging from the
+// top, threshold line, and dB scales on both sides.
+class HistoryStrip : public juce::Component
 {
 public:
-    explicit DeEssHistogram (LiveVoiceProcessor& p) : proc (p) { setOpaque (true); }
+    explicit HistoryStrip (LiveVoiceProcessor& p) : proc (p) { setOpaque (true); }
     void update();
     void paint (juce::Graphics&) override;
-private:
+
+protected:
+    struct Config
+    {
+        juce::String title, thresholdText;
+        const juce::Colour* accent = nullptr;
+        bool on = true;
+        float lo = -60.0f, hi = 0.0f, threshold = -30.0f, grMax = 12.0f, currentGr = 0.0f;
+    };
+    virtual Config getConfig() = 0;
+    virtual void readPoints (dsp::LevelHistory::Point* dest, int count) = 0;
+
     LiveVoiceProcessor& proc;
-    std::vector<dsp::DeEsser::HistoryPoint> points;
+
+private:
+    std::vector<dsp::LevelHistory::Point> points;
 };
 
-// Big readout of gain-before-feedback gained in the ring-out.
-class GbfTile : public juce::Component, public juce::SettableTooltipClient
+class DeEssHistory : public HistoryStrip
 {
 public:
-    explicit GbfTile (LiveVoiceProcessor& p) : proc (p) {}
+    using HistoryStrip::HistoryStrip;
+protected:
+    Config getConfig() override;
+    void readPoints (dsp::LevelHistory::Point* d, int n) override { proc.deEsser.readHistory (d, n); }
+};
+
+class CompHistory : public HistoryStrip
+{
+public:
+    using HistoryStrip::HistoryStrip;
+protected:
+    Config getConfig() override;
+    void readPoints (dsp::LevelHistory::Point* d, int n) override { proc.comp.readHistory (d, n); }
+};
+
+// Compressor transfer curve with a live dot for the current input level.
+class CompGraph : public juce::Component
+{
+public:
+    explicit CompGraph (LiveVoiceProcessor& p) : proc (p) { setOpaque (true); }
     void update();
     void paint (juce::Graphics&) override;
 private:
     LiveVoiceProcessor& proc;
-    float shown = -1000.0f;
-    int state = -1;
+    float inDb = -100.0f, grDb = 0.0f;
 };
 
 // PSE key level vs threshold, with an open/closed lamp.
@@ -109,6 +150,21 @@ public:
 private:
     LiveVoiceProcessor& proc;
     float key = -100.0f;
+};
+
+// Dynamic EQ activity for the selected band: detector level vs threshold, and
+// the dynamic gain it produces right now.
+class DynActivity : public juce::Component
+{
+public:
+    explicit DynActivity (LiveVoiceProcessor& p) : proc (p) {}
+    void setBand (int b) { band = b; repaint(); }
+    void update();
+    void paint (juce::Graphics&) override;
+private:
+    LiveVoiceProcessor& proc;
+    int band = 0;
+    float level = -100.0f, gain = 0.0f;
 };
 
 // ---------------------------------------------------------------- panels
@@ -128,7 +184,6 @@ private:
          maxFixed { "Fixed Max", theme::feedback }, maxFloat { "Floating Max", theme::feedback },
          lo { "Low Limit", theme::feedback }, hi { "High Limit", theme::feedback };
     juce::Label modeLabel, widthLabel, status;
-    GbfTile gbfTile { proc };
 };
 
 class EqPanel : public ModulePanel
@@ -144,13 +199,12 @@ private:
     LiveVoiceProcessor& proc;
     int band = 0;
     std::array<juce::TextButton, params::numEqBands> bandButtons;
-    ToggleBtn bandOn { "BAND ON", theme::eq }, dynamic { "DYNAMIC", theme::eq };
+    ToggleBtn bandOn { "BAND ON", theme::eq }, dynamic { "DYNAMIC", theme::eq }, solo { "SOLO", theme::warn };
     Combo type;
     Knob freq { "Freq", theme::eq }, gain { "Gain", theme::eq }, q { "Q", theme::eq },
          thr { "Threshold", theme::eq }, range { "Range", theme::eq }, ratio { "Ratio", theme::eq },
          attack { "Attack", theme::eq }, release { "Release", theme::eq };
-    juce::Label dynLabel;
-    GainReductionMeter dynMeter { theme::eq, 18.0f };
+    DynActivity activity { proc };
 };
 
 class DeEssPanel : public ModulePanel
@@ -164,10 +218,11 @@ private:
     LiveVoiceProcessor& proc;
     void bindThreshold();
     Combo mode;
-    ToggleBtn relative { "RELATIVE", theme::deess };
-    Knob freq { "Freq", theme::deess }, thr { "Threshold", theme::deess }, range { "Range", theme::deess }, rel { "Release", theme::deess };
+    ToggleBtn relative { "RELATIVE", theme::deess }, solo { "SOLO", theme::warn };
+    Knob freq { "Freq", theme::deess }, width { "Width (Q)", theme::deess }, thr { "Threshold", theme::deess },
+         range { "Range", theme::deess }, rel { "Release", theme::deess };
     GainReductionMeter grMeter { theme::deess, 24.0f };
-    juce::Label grLabel;
+    juce::Label grLabel, grValue;
     int boundRelative = -1;
 };
 
@@ -209,6 +264,7 @@ public:
     void paint (juce::Graphics&) override;
     void update();
     void refreshPresetList();
+    std::function<void()> onThemeToggle;
 
 private:
     void presetChosen();
@@ -218,11 +274,12 @@ private:
     LiveVoiceProcessor& proc;
     juce::ComboBox presetBox;
     juce::TextButton saveBtn { "SAVE" }, deleteBtn { "DELETE" };
+    juce::TextButton soloWarning { "SOLO ON - CLICK TO CLEAR" };
     Knob inGain { "INPUT", theme::output }, outGain { "OUTPUT", theme::output }, ceiling { "CEILING", theme::danger };
-    LevelMeter inMeter { proc.inputPeakDb }, outMeter { proc.outputPeakDb };
-    ToggleBtn limit { "LIMIT", theme::danger }, bypass { "BYPASS", theme::warn };
+    ToggleBtn limit { "LIMIT", theme::danger }, bypass { "BYPASS", theme::warn }, lightBtn { "LIGHT", theme::text };
     GainReductionMeter limMeter { theme::danger, 12.0f };
     juce::StringArray userNames;
     std::unique_ptr<juce::AlertWindow> dialog;
     bool updatingList = false;
+    int flash = 0;
 };

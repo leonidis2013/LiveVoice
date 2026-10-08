@@ -47,6 +47,7 @@ private:
 
     void drawGrid (juce::Graphics&);
     void drawCurves (juce::Graphics&);
+    void drawDeEss (juce::Graphics&);
     void drawNotchMarkers (juce::Graphics&);
     void drawHandles (juce::Graphics&);
 

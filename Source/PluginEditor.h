@@ -18,10 +18,15 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void refreshNow() { timerCallback(); }   // used by the snapshot tool
+    void toggleThemeForTest() { toggleTheme(); }
 
 private:
     void timerCallback() override;
     void layoutCanvas();
+    void toggleTheme();
+
+    // applies the saved light/dark choice before any child is built
+    struct ThemeLoader { ThemeLoader() { theme::setLightMode (theme::loadLightModePreference()); } };
 
     // background that draws the signal-flow arrows between the bottom panels
     struct Canvas : public juce::Component
@@ -31,13 +36,17 @@ private:
     };
 
     LiveVoiceProcessor& proc;
+    ThemeLoader themeLoader;
     theme::LookAndFeel lnf;
     juce::TooltipWindow tooltips { this, 600 };
 
     Canvas canvas;
     HeaderBar header { proc };
     RtaDisplay rta { proc };
-    DeEssHistogram histogram { proc };
+    IoMeters ioMeters { proc };
+    DeEssHistory deEssHistory { proc };
+    CompHistory compHistory { proc };
+    CompGraph compGraph { proc };
     PsePanel psePanel { proc };
     FeedbackPanel feedbackPanel { proc };
     EqPanel eqPanel { proc };

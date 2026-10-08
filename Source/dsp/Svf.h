@@ -14,6 +14,8 @@ namespace dsp
         double g = 0.0, k = 1.0;            // analog-prototype params
         double a1 = 1.0, a2 = 0.0, a3 = 0.0;
         double m0 = 1.0, m1 = 0.0, m2 = 0.0;
+        int order = 2;                      // 1 = one-pole (6 dB/oct) stage
+        double G1 = 0.0;                    // one-pole coefficient g/(1+g)
 
         static constexpr double pi = 3.14159265358979323846;
 
@@ -25,6 +27,7 @@ namespace dsp
 
         void finish()
         {
+            order = 2;
             a1 = 1.0 / (1.0 + g * (g + k));
             a2 = g * a1;
             a3 = g * a2;
@@ -58,6 +61,9 @@ namespace dsp
         void lowPass (double freq, double q, double fs)  { g = prewarp (freq, fs); k = 1.0 / q; m0 = 0; m1 = 0;  m2 = 1;  finish(); }
         void highPass (double freq, double q, double fs) { g = prewarp (freq, fs); k = 1.0 / q; m0 = 1; m1 = -k; m2 = -1; finish(); }
         void bandPass (double freq, double q, double fs) { g = prewarp (freq, fs); k = 1.0 / q; m0 = 0; m1 = k;  m2 = 0;  finish(); } // 0 dB peak
+        // first-order (6 dB/oct) stages
+        void lowPass1 (double freq, double fs)  { g = prewarp (freq, fs); k = 1.0; G1 = g / (1.0 + g); order = 1; m0 = 0; m1 = 0; m2 = 1; }
+        void highPass1 (double freq, double fs) { g = prewarp (freq, fs); k = 1.0; G1 = g / (1.0 + g); order = 1; m0 = 1; m1 = 0; m2 = -1; }
         void identity() { g = 0.1; k = 1.0; m0 = 1; m1 = 0; m2 = 0; finish(); }
 
         // Exact digital response: the TPT SVF is the bilinear transform of the
@@ -65,6 +71,11 @@ namespace dsp
         std::complex<double> response (double freq, double fs) const
         {
             const std::complex<double> s (0.0, prewarp (freq, fs) / g);
+            if (order == 1)
+            {
+                const auto lp = 1.0 / (s + 1.0);
+                return m0 + m2 * lp;
+            }
             const auto den = s * s + k * s + 1.0;
             return (m0 * den + m1 * s + m2) / den;
         }
@@ -82,6 +93,13 @@ namespace dsp
 
         inline float process (float in, const SvfCoeffs& c) noexcept
         {
+            if (c.order == 1)
+            {
+                const double v = (in - ic1) * c.G1;
+                const double lp = v + ic1;
+                ic1 = lp + v;
+                return (float) (c.m0 * in + c.m2 * lp);
+            }
             const double v0 = in;
             const double v3 = v0 - ic2;
             const double v1 = c.a1 * ic1 + c.a2 * v3;

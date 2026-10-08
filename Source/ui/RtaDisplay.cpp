@@ -73,9 +73,10 @@ float RtaDisplay::bandEqDb (int b, double freq, bool includeDynamic) const
     if (v (bOn (b)) < 0.5f) return 0.0f;
 
     dsp::DynamicEq::BandSettings s;
-    s.type = bandType (b);
+    const auto shape = bandShapeFromChoice (b, (b == 0 || b == numEqBands - 1) ? (int) v (bType (b)) : 0);
+    s.type = shape.type; s.slope = shape.slope;
     const float gain = v (bGain (b)) + (includeDynamic && v (bDyn (b)) > 0.5f ? dynGain[(size_t) b] : 0.0f);
-    dsp::SvfCoeffs c[2];
+    dsp::SvfCoeffs c[dsp::DynamicEq::maxStages];
     int stages = 1;
     const double fs = proc.currentSampleRate.load();
     dsp::DynamicEq::designBand (s, v (bFreq (b)), v (bQ (b)), gain, fs, c, stages);
@@ -224,15 +225,16 @@ void RtaDisplay::paint (juce::Graphics& g)
     // legend
     auto legend = getLocalBounds().toFloat().removeFromTop (20.0f).withTrimmedRight (40.0f);
     g.setFont (theme::font (11.5f));
-    const std::pair<const char*, juce::Colour> items[] {
-        { "Input", theme::input }, { "Output", theme::output }, { "Dynamic EQ", theme::eq }, { "Feedback notches", theme::feedback } };
-    for (int i = 3; i >= 0; --i)
+    const std::tuple<const char*, juce::Colour, float> items[] {
+        { "Input", theme::input, 54.0f }, { "Output", theme::output, 62.0f }, { "Dynamic EQ", theme::eq, 86.0f },
+        { "Feedback notches", theme::feedback, 118.0f }, { "De-esser", theme::deess, 72.0f } };
+    for (int i = 4; i >= 0; --i)
     {
-        auto r = legend.removeFromRight (i == 3 ? 118.0f : (i == 2 ? 88.0f : 64.0f));
-        g.setColour (items[i].second);
+        auto r = legend.removeFromRight (std::get<2> (items[i]));
+        g.setColour (std::get<1> (items[i]));
         g.fillRoundedRectangle (r.getX(), r.getCentreY() - 3.0f, 10.0f, 6.0f, 2.0f);
         g.setColour (theme::textDim);
-        g.drawText (items[i].first, r.withTrimmedLeft (15.0f), juce::Justification::centredLeft);
+        g.drawText (std::get<0> (items[i]), r.withTrimmedLeft (15.0f), juce::Justification::centredLeft);
     }
 
     g.setColour (theme::textDim);
@@ -265,7 +267,7 @@ void RtaDisplay::drawGrid (juce::Graphics& g)
         const float x = xForFreq (f);
         const int fi = juce::roundToInt (f);
         const bool major = fi == 100 || fi == 1000 || fi == 10000;
-        g.setColour (major ? theme::grid.brighter (0.25f) : theme::grid);
+        g.setColour (major ? theme::grid.overlaidWith (theme::textFaint.withAlpha (0.3f)) : theme::grid);
         g.drawVerticalLine ((int) x, plot.getY(), plot.getBottom());
     }
     const std::pair<float, const char*> labels[] { { 50, "50" }, { 100, "100" }, { 200, "200" }, { 500, "500" }, { 1000, "1k" },
@@ -297,6 +299,55 @@ void RtaDisplay::drawGrid (juce::Graphics& g)
         g.setColour (theme::eq.withAlpha (0.45f));
         g.drawText ((db > 0 ? "+" : "") + juce::String ((int) db), juce::Rectangle<float> (plot.getRight() + 3.0f, y - 7.0f, 30.0f, 14.0f),
                     juce::Justification::centredLeft);
+    }
+}
+
+// De-esser: shaded detection band plus its live reduction curve.
+void RtaDisplay::drawDeEss (juce::Graphics& g)
+{
+    auto v = [this] (const juce::String& id) { return proc.apvts.getRawParameterValue (id)->load(); };
+    if (v (dsOn) < 0.5f && proc.soloTarget.load() != LiveVoiceProcessor::soloDeEss) return;
+
+    dsp::DeEsser::Settings s;
+    s.mode = juce::jlimit (0, 2, (int) v (dsMode));
+    s.freq = v (dsFreq); s.q = v (dsQ);
+    const double fs = proc.currentSampleRate.load();
+    const float gr = proc.deEsser.getCurrentGainReductionDb();
+    const bool soloed = proc.soloTarget.load() == LiveVoiceProcessor::soloDeEss;
+
+    float lo = s.freq, hi = maxFreq;
+    if (s.mode == dsp::DeEsser::band)
+    {
+        const float bwOct = 2.0f * std::asinh (1.0f / (2.0f * s.q)) / std::log (2.0f);
+        lo = s.freq * std::pow (2.0f, -bwOct * 0.5f);
+        hi = s.freq * std::pow (2.0f, bwOct * 0.5f);
+    }
+    const float x0 = xForFreq (juce::jlimit (minFreq, maxFreq, lo)), x1 = xForFreq (juce::jlimit (minFreq, maxFreq, hi));
+    const float activity = juce::jlimit (0.0f, 1.0f, gr / std::max (1.0f, v (dsRange)));
+    g.setColour (theme::deess.withAlpha ((soloed ? 0.20f : 0.08f) + 0.14f * activity));
+    g.fillRect (juce::Rectangle<float> (x0, plot.getY(), x1 - x0, plot.getHeight()));
+    g.setColour (theme::deess.withAlpha (0.5f));
+    g.drawVerticalLine ((int) xForFreq (s.freq), plot.getY(), plot.getBottom());
+
+    // label at the top of the band
+    g.setFont (theme::font (10.5f, true));
+    g.setColour (theme::deess);
+    const juce::String label = juce::String (soloed ? "SOLO  " : "") + "DE-ESS " + (gr > 0.2f ? juce::String (-gr, 1) + " dB" : "");
+    g.drawText (label, juce::Rectangle<float> (xForFreq (s.freq) - 70.0f, plot.getY() + 22.0f, 140.0f, 14.0f), juce::Justification::centred);
+
+    // live reduction curve
+    if (gr > 0.05f)
+    {
+        juce::Path curve;
+        const int n = std::max (2, (int) plot.getWidth() / 2);
+        for (int i = 0; i < n; ++i)
+        {
+            const float x = plot.getX() + plot.getWidth() * (float) i / (float) (n - 1);
+            const float y = yForEqDb (dsp::DeEsser::reductionResponseDb (s, gr, freqForX (x), fs));
+            if (i == 0) curve.startNewSubPath (x, y); else curve.lineTo (x, y);
+        }
+        g.setColour (theme::deess);
+        g.strokePath (curve, juce::PathStrokeType (1.8f));
     }
 }
 
@@ -334,6 +385,8 @@ void RtaDisplay::drawCurves (juce::Graphics& g)
 
     g.saveState();
     g.reduceClipRegion (plot.toNearestInt());
+
+    drawDeEss (g);
 
     if (fbOnNow)
     {

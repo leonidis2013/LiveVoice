@@ -202,6 +202,8 @@ namespace
     }
 }
 
+static double sineChange (Harness& h, double freq, float inDb, double seconds);
+
 static void testLatency()
 {
     std::cout << "\nLatency" << std::endl;
@@ -319,22 +321,45 @@ static void testLearnAndState()
 static void testDynamicEq()
 {
     std::cout << "\nDynamic EQ" << std::endl;
-    auto measure = [] (float inDb, bool dyn)
+    auto measure = [] (float inDb, bool dyn, float ratio = 10.0f, float range = -6.0f)
     {
         Harness h; h.allModulesOff(); h.set (eqOn, 1);
         h.set (bOn (0), 0);
         h.set (bOn (2), 1); h.set (bFreq (2), 1000.0f); h.set (bGain (2), 0.0f); h.set (bQ (2), 1.0f);
-        h.set (bDyn (2), dyn ? 1.0f : 0.0f); h.set (bThr (2), -30.0f); h.set (bRange (2), -6.0f); h.set (bRatio (2), 10.0f);
+        h.set (bDyn (2), dyn ? 1.0f : 0.0f); h.set (bThr (2), -30.0f); h.set (bRange (2), range); h.set (bRatio (2), ratio);
         const float a = dsp::dbToGain (inDb);
         auto out = h.run ([a] (int64_t n) { return a * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 1000.0 * (double) n / fs); }, 1.0);
         return toneDb (out, out.size() - 9600, out.size(), 1000.0) - inDb;
     };
     const double loud = measure (-10.0f, true), quiet = measure (-45.0f, true), staticBand = measure (-10.0f, false);
-    std::cout << "  1 kHz band, thr -30, range -6:  loud input change " << juce::String (loud, 2) << " dB, quiet input change "
+    std::cout << "  1 kHz band, thr -30, range -6, 10:1:  loud input change " << juce::String (loud, 2) << " dB, quiet input change "
               << juce::String (quiet, 2) << " dB" << std::endl;
-    check (std::abs (loud + 6.0) < 0.6, "loud signal is cut by the full range (-6 dB)");
+    check (std::abs (loud + 6.0) < 0.6, "loud signal is cut by (almost) the full range");
     check (std::abs (quiet) < 0.3, "signal below threshold is untouched");
     check (std::abs (staticBand) < 0.3, "dynamic off + 0 dB gain = transparent");
+
+    // proportional: sweep the band level past the threshold, gain should follow gradually
+    {
+        dsp::DynamicEq::BandSettings bs; bs.thresholdDb = -30.0f; bs.ratio = 2.0f; bs.rangeDb = -12.0f;
+        juce::String row ("  level -> cut (2:1, range -12):");
+        double prev = 1.0, maxStep = 0.0, maxErr = 0.0;
+        bool monotonic = true;
+        for (float lvl = -42.0f; lvl <= -6.0f; lvl += 4.0f)
+        {
+            const double c = measure (lvl, true, 2.0f, -12.0f);
+            const double expected = dsp::DynamicEq::dynamicGainFor (lvl, bs);
+            row << "  " << juce::String ((int) lvl) << ":" << juce::String (c, 1);
+            if (c > prev + 0.05) monotonic = false;
+            if (prev <= 0.5) maxStep = std::max (maxStep, prev - c);
+            maxErr = std::max (maxErr, std::abs (c - expected));
+            prev = c;
+        }
+        std::cout << row << std::endl;
+        std::cout << "  largest change per 4 dB of input: " << juce::String (maxStep, 2) << " dB; worst error vs curve: " << juce::String (maxErr, 2) << " dB" << std::endl;
+        check (monotonic, "cut grows steadily as the band gets louder (no jumps back)");
+        check (maxStep < 2.6, "gradual: never more than ~2.5 dB of extra cut per 4 dB louder (no on/off switching)");
+        check (maxErr < 0.6, "matches the proportional curve shown in the UI");
+    }
 
     // static response matches what the UI draws
     Harness h; h.allModulesOff(); h.set (eqOn, 1); h.set (bOn (0), 0);
@@ -344,6 +369,53 @@ static void testDynamicEq()
     const double measured = toneDb (out, out.size() - 9600, out.size(), 2500.0) + 20.0;
     std::cout << "  bell 2 kHz +6 dB Q2 at 2.5 kHz: measured " << juce::String (measured, 2) << " dB, drawn " << juce::String (c.magnitudeDb (2500.0, fs), 2) << " dB" << std::endl;
     check (std::abs (measured - c.magnitudeDb (2500.0, fs)) < 0.2, "drawn EQ curve matches the audio");
+
+    // high-pass slopes, one octave below a 200 Hz corner (Butterworth: -10log10(1 + 4^n))
+    juce::String slopes ("  HP at 200 Hz, level at 100 Hz:");
+    bool slopesOk = true;
+    for (int choice = 2; choice <= 7; ++choice)
+    {
+        const int dbOct = params::slopeDbPerOct[choice - 2];
+        Harness hs; hs.allModulesOff(); hs.set (eqOn, 1);
+        for (int b = 1; b < numEqBands; ++b) hs.set (bOn (b), 0);
+        hs.set (bOn (0), 1); hs.set (bType (0), (float) choice); hs.set (bFreq (0), 200.0f); hs.set (bQ (0), 0.71f);
+        const double got = sineChange (hs, 100.0, -6.0f, 0.6);
+        const double order = dbOct / 6.0;
+        const double expected = -10.0 * std::log10 (1.0 + std::pow (4.0, order));
+        slopes << "  " << dbOct << "dB/oct:" << juce::String (got, 1);
+        slopesOk &= std::abs (got - expected) < (dbOct == 12 ? 0.8 : 0.5);
+    }
+    std::cout << slopes << std::endl;
+    check (slopesOk, "6/12/18/24/36/48 dB/oct slopes measure as designed");
+}
+
+static void testSolo()
+{
+    std::cout << "\nSolo / listen" << std::endl;
+    auto level = [] (Harness& h, double freq)
+    {
+        return sineChange (h, freq, -12.0f, 0.5);
+    };
+    double in450, out3k, ds7k, ds300;
+    {
+        Harness h; h.allModulesOff(); h.set (eqOn, 1); h.p.soloTarget = 2;   // band 3 = 450 Hz box band
+        in450 = level (h, 450.0);
+    }
+    {
+        Harness h; h.allModulesOff(); h.set (eqOn, 1); h.p.soloTarget = 2;
+        out3k = level (h, 3000.0);
+    }
+    { Harness h; h.allModulesOff(); h.set (dsFreq, 7000.0f); h.p.soloTarget = LiveVoiceProcessor::soloDeEss; ds7k = level (h, 7000.0); }
+    { Harness h; h.allModulesOff(); h.set (dsFreq, 7000.0f); h.p.soloTarget = LiveVoiceProcessor::soloDeEss; ds300 = level (h, 300.0); }
+    std::cout << "  EQ band 3 solo: 450 Hz " << juce::String (in450, 1) << " dB, 3 kHz " << juce::String (out3k, 1)
+              << " dB;  de-ess solo (7 kHz): 7 kHz " << juce::String (ds7k, 1) << " dB, 300 Hz " << juce::String (ds300, 1) << " dB" << std::endl;
+    check (std::abs (in450) < 0.5 && out3k < -15.0, "EQ solo passes only the band's region");
+    check (std::abs (ds7k) < 0.5 && ds300 < -25.0, "de-ess solo plays only the sibilance band");
+
+    Harness h; h.p.soloTarget = 1;
+    juce::MemoryBlock state; h.p.getStateInformation (state);
+    Harness h2; h2.p.setStateInformation (state.getData(), (int) state.getSize());
+    check (h2.p.soloTarget.load() == LiveVoiceProcessor::soloNone, "solo is never recalled with a session");
 }
 
 static void testDeEsser()
@@ -352,16 +424,19 @@ static void testDeEsser()
     auto change = [] (double freq, int mode)
     {
         Harness h; h.allModulesOff(); h.set (dsOn, 1); h.set (dsMode, (float) mode);
-        h.set (dsFreq, 6000.0f); h.set (dsThr, -30.0f); h.set (dsRange, 8.0f);
+        h.set (dsFreq, 7000.0f); h.set (dsQ, 3.0f); h.set (dsThr, -30.0f); h.set (dsRange, 8.0f);
         auto out = h.run ([freq] (int64_t n) { return 0.3f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * freq * (double) n / fs); }, 1.0);
         return toneDb (out, out.size() - 9600, out.size(), freq) - dsp::gainToDb (0.3f);
     };
-    const double s8k = change (8000.0, 0), lowSplit = change (300.0, 0), s8kWide = change (8000.0, 1);
-    std::cout << "  split: 8 kHz " << juce::String (s8k, 2) << " dB, 300 Hz " << juce::String (lowSplit, 2)
-              << " dB;  wideband: 8 kHz " << juce::String (s8kWide, 2) << " dB" << std::endl;
-    check (s8k < -5.0, "split mode reduces sibilant band");
-    check (std::abs (lowSplit) < 0.3, "split mode leaves the body of the voice alone");
-    check (s8kWide < -5.0, "wideband mode reduces too");
+    const double band7k = change (7000.0, 0), band300 = change (300.0, 0), bandOctBelow = change (3500.0, 0);
+    const double shelf12k = change (12000.0, 1), wide7k = change (7000.0, 2);
+    std::cout << "  band (7 kHz, Q3): 7 kHz " << juce::String (band7k, 2) << " dB, 3.5 kHz " << juce::String (bandOctBelow, 2)
+              << " dB, 300 Hz " << juce::String (band300, 2) << " dB;  shelf: 12 kHz " << juce::String (shelf12k, 2)
+              << " dB;  wideband: 7 kHz " << juce::String (wide7k, 2) << " dB" << std::endl;
+    check (band7k < -5.0, "band mode reduces the sibilance band");
+    check (bandOctBelow > -1.0, "band mode is narrow: an octave below is barely touched");
+    check (std::abs (band300) < 0.2, "band mode leaves the body of the voice alone");
+    check (shelf12k < -5.0 && wide7k < -5.0, "shelf (all highs) and wideband modes reduce too");
 }
 
 static void testLimiter()
@@ -394,7 +469,7 @@ static void testPresets()
     check (h.p.presets.deleteUser (name) && ! h.p.presets.getUserNames().contains (name), "user preset deleted");
 }
 
-static double sineChange (Harness& h, double freq, float inDb, double seconds = 1.0)
+static double sineChange (Harness& h, double freq, float inDb, double seconds)
 {
     const float a = dsp::dbToGain (inDb);
     auto out = h.run ([a, freq] (int64_t n) { return a * (float) std::sin (2.0 * juce::MathConstants<double>::pi * freq * (double) n / fs); }, seconds);
@@ -451,9 +526,9 @@ static void testCompressor()
         h.set (compKnee, knee); h.set (compMakeup, 0.0f); h.set (compAttack, 5.0f); h.set (compRelease, 200.0f);
     };
     double above, below, inKnee;
-    { Harness h; make (h, 0.0f); above = sineChange (h, 1000.0, -4.0f); }
-    { Harness h; make (h, 10.0f); below = sineChange (h, 1000.0, -30.0f); }
-    { Harness h; make (h, 10.0f); inKnee = sineChange (h, 1000.0, -20.0f); }
+    { Harness h; make (h, 0.0f); above = sineChange (h, 1000.0, -4.0f, 1.0); }
+    { Harness h; make (h, 10.0f); below = sineChange (h, 1000.0, -30.0f, 1.0); }
+    { Harness h; make (h, 10.0f); inKnee = sineChange (h, 1000.0, -20.0f, 1.0); }
     std::cout << "  thr -20, 4:1:  16 dB over -> " << juce::String (above, 2) << " dB (expect -12),  10 dB under -> "
               << juce::String (below, 2) << " dB,  at threshold w/ 10 dB knee -> " << juce::String (inKnee, 2) << " dB (expect -0.94)" << std::endl;
     check (std::abs (above + 12.0) < 0.3, "ratio is accurate");
@@ -504,7 +579,7 @@ static void testCompressor()
     check (longRec > shortRec * 1.5, "auto release is program dependent (opto-style)");
 
     { Harness h; make (h, 0.0f); h.set (compMix, 50.0f);
-      const double half = sineChange (h, 1000.0, -4.0f);
+      const double half = sineChange (h, 1000.0, -4.0f, 1.0);
       const double expected = 20.0 * std::log10 (0.5 + 0.5 * std::pow (10.0, -12.0 / 20.0));
       std::cout << "  50% mix: " << juce::String (half, 2) << " dB (expect " << juce::String (expected, 2) << ")" << std::endl;
       check (std::abs (half - expected) < 0.3, "parallel mix blends correctly"); }
@@ -513,19 +588,19 @@ static void testCompressor()
 static void testRelativeDeEss()
 {
     std::cout << "\nDe-esser relative detection" << std::endl;
-    // a "voice" = 300 Hz body + 8 kHz sibilance 3 dB lower, at a soft and a loud level
+    // a "voice" = 300 Hz body + 7 kHz sibilance 3 dB lower, at a soft and a loud level
     auto run = [] (bool relative, float levelDb)
     {
         Harness h; h.allModulesOff(); h.set (dsOn, 1); h.set (dsRelative, relative ? 1.0f : 0.0f);
-        h.set (dsThr, -30.0f); h.set (dsRelThr, -16.0f); h.set (dsRange, 8.0f); h.set (dsFreq, 6000.0f);
+        h.set (dsThr, -30.0f); h.set (dsRange, 8.0f); h.set (dsFreq, 7000.0f);   // default relative threshold
         const float a = dsp::dbToGain (levelDb), b = dsp::dbToGain (levelDb - 3.0f);
         auto out = h.run ([a, b] (int64_t n)
         {
             const double t = (double) n / fs;
             return a * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 300.0 * t)
-                 + b * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 8000.0 * t);
+                 + b * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 7000.0 * t);
         }, 1.0);
-        return toneDb (out, out.size() - 9600, out.size(), 8000.0) - (levelDb - 3.0f);
+        return toneDb (out, out.size() - 9600, out.size(), 7000.0) - (levelDb - 3.0f);
     };
     const double absSoft = run (false, -45.0f), absLoud = run (false, -12.0f);
     const double relSoft = run (true, -45.0f), relLoud = run (true, -12.0f);
@@ -535,51 +610,8 @@ static void testRelativeDeEss()
     check (relSoft < -4.0 && std::abs (relSoft - relLoud) < 1.0, "relative mode: soft and loud speech treated the same");
 
     Harness h; h.allModulesOff(); h.set (dsOn, 1); h.set (dsRelative, 1);
-    h.run ([] (int64_t n) { return 1.0e-4f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 8000.0 * (double) n / fs); }, 0.5);
+    h.run ([] (int64_t n) { return 1.0e-4f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 7000.0 * (double) n / fs); }, 0.5);
     check (h.p.deEsser.getCurrentGainReductionDb() < 0.1f, "relative mode ignores near-silence (no reduction on noise)");
-}
-
-static void testGbf()
-{
-    std::cout << "\nGain-before-feedback readout (ring-out using LiveVoice's OUTPUT gain)" << std::endl;
-    Harness h; h.set (fbOn, 1); h.set (fbMode, 0); h.set (outGain, -15.0f);
-    Voice v (120.0, false, -40.0f);
-    Room room (1.5);    // at 0 dB plugin gain the loop is +1.5 dB at the resonances
-    int64_t pos = 0;
-    auto runFor = [&] (double seconds)
-    {
-        const int64_t total = (int64_t) (seconds * fs);
-        for (int64_t s = 0; s < total; s += blockSize)
-        {
-            h.buf.setSize (1, blockSize, false, false, true);
-            for (int i = 0; i < blockSize; ++i) h.buf.setSample (0, i, v (pos + i) + room.feedback (pos + i));
-            h.p.processBlock (h.buf, h.midi);
-            h.p.detector.processPendingForTest();
-            for (int i = 0; i < blockSize; ++i) room.store (pos + i, h.buf.getSample (0, i));
-            pos += blockSize;
-        }
-    };
-    h.set (fbLearn, 1);
-    runFor (3.0);                                     // -15 dB: well below the feedback point, no ring
-    const bool noneYet = std::isnan (h.p.getGbfGainedDb()) && std::isnan (h.p.gbfFirstRingGain.load());
-    h.set (outGain, 0.0f);  runFor (6.0);             // first rings -> notches; then holds
-    const float first = h.p.gbfFirstRingGain.load();
-    h.set (outGain, 4.0f);  runFor (8.0);             // push further, more notches, then holds
-    const float gbfVal = h.p.getGbfGainedDb();
-    h.set (fbLearn, 0);
-    h.set (outGain, 0.0f);  runFor (1.0);
-    std::cout << "  first ring at plugin gain " << juce::String (first, 1) << " dB; GBF gained = " << juce::String (gbfVal, 1)
-              << " dB; notches " << notchList (h.notches()) << std::endl;
-    check (noneYet, "no readout before the first ring");
-    check (std::abs (first - 0.0f) < 0.01f, "first feedback point captured at the gain where it rang");
-    check (std::abs (gbfVal - 4.0f) < 0.01f, "readout = highest stable gain above the first feedback point (+4 dB)");
-    check (std::abs (h.p.getGbfGainedDb() - 4.0f) < 0.01f, "readout is kept after Learn is switched off");
-
-    juce::MemoryBlock state;
-    h.p.getStateInformation (state);
-    Harness h2;
-    h2.p.setStateInformation (state.getData(), (int) state.getSize());
-    check (std::abs (h2.p.getGbfGainedDb() - 4.0f) < 0.01f, "readout is saved with the session");
 }
 
 static void testLearnFalsePositives()
@@ -611,20 +643,27 @@ static void testPerformance()
     check (ms < 2000.0, "well under real time");
 }
 
-static int snapshot (const juce::String& path)
+static int snapshot (const juce::String& path, bool light, bool toggle)
 {
     juce::ScopedJuceInitialiser_GUI gui;
+    const bool before = theme::loadLightModePreference();
+    theme::saveLightModePreference (light);
     Harness h;
     h.set (fbOn, 1); h.set (eqOn, 1);
     h.p.presets.loadFactory (1);
     h.set (fbMode, 0);
     h.set (pseOn, 1); h.set (pseThr, -50.0f);
+    h.set (bDyn (2), 1); h.set (bThr (2), -40.0f); h.set (bRange (2), -6.0f);
+    h.set (compThr, -30.0f);
+    h.p.selectedBand = 2;
     Voice v (120.0, false, -20.0f);
     Room room (1.2);
     runClosedLoop (h, v, room, 6.0);
 
     std::unique_ptr<LiveVoiceEditor> ed (dynamic_cast<LiveVoiceEditor*> (h.p.createEditor()));
     ed->setSize (LiveVoiceEditor::designWidth, LiveVoiceEditor::designHeight);
+    if (toggle) ed->toggleThemeForTest();   // exercise the live switch, not just startup
+    if (juce::String (path).contains ("solo")) h.p.soloTarget = LiveVoiceProcessor::soloDeEss;
     // keep audio running so the RTA and histogram fill in
     int64_t pos = (int64_t) (6.0 * fs);
     for (int frame = 0; frame < 120; ++frame)
@@ -648,24 +687,25 @@ static int snapshot (const juce::String& path)
     const bool ok = png.writeImageToStream (img, os);
     std::cout << (ok ? "wrote " : "FAILED ") << f.getFullPathName() << std::endl;
     ed.reset();
+    theme::saveLightModePreference (before);
     return ok ? 0 : 1;
 }
 
 int main (int argc, char** argv)
 {
     if (argc >= 3 && juce::String (argv[1]) == "--snapshot")
-        return snapshot (argv[2]);
+        return snapshot (argv[2], argc >= 4 && juce::String (argv[3]) == "light", argc >= 4 && juce::String (argv[3]) == "toggle");
 
     juce::ScopedJuceInitialiser_GUI gui;   // parameters/attachments need a message manager
     testLatency();
     testDynamicEq();
+    testSolo();
     testDeEsser();
     testLimiter();
     testPresets();
     testPse();
     testCompressor();
     testRelativeDeEss();
-    testGbf();
     testClosedLoop();
     testFalsePositives();
     testLearnAndState();

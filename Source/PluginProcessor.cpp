@@ -23,7 +23,7 @@ LiveVoiceProcessor::LiveVoiceProcessor()
         d.thr = raw (bThr (b)); d.range = raw (bRange (b)); d.ratio = raw (bRatio (b)); d.att = raw (bAtt (b)); d.rel = raw (bRel (b));
     }
     p.dsOn = raw (dsOn); p.dsFreq = raw (dsFreq); p.dsThr = raw (dsThr); p.dsRange = raw (dsRange); p.dsMode = raw (dsMode); p.dsRel = raw (dsRel);
-    p.dsRelative = raw (dsRelative); p.dsRelThr = raw (dsRelThr);
+    p.dsRelative = raw (dsRelative); p.dsRelThr = raw (dsRelThr); p.dsQ = raw (dsQ);
     p.pseOn = raw (pseOn); p.pseThr = raw (pseThr); p.pseRange = raw (pseRange); p.pseAttack = raw (pseAttack);
     p.pseHold = raw (pseHold); p.pseRelease = raw (pseRelease); p.pseScHp = raw (pseScHp); p.pseScLp = raw (pseScLp);
     p.compOn = raw (compOn); p.compThr = raw (compThr); p.compRatio = raw (compRatio); p.compKnee = raw (compKnee);
@@ -108,7 +108,8 @@ void LiveVoiceProcessor::updateSettings()
         const auto& d = p.bands[(size_t) b];
         dsp::DynamicEq::BandSettings s;
         s.on = d.on->load() > 0.5f;
-        s.type = params::bandTypeFromChoice (b, d.type != nullptr ? (int) d.type->load() : 0);
+        const auto shape = params::bandShapeFromChoice (b, d.type != nullptr ? (int) d.type->load() : 0);
+        s.type = shape.type; s.slope = shape.slope;
         s.freq = d.freq->load(); s.gainDb = d.gain->load(); s.q = d.q->load();
         s.dynamic = d.dyn->load() > 0.5f;
         s.thresholdDb = d.thr->load(); s.rangeDb = d.range->load(); s.ratio = d.ratio->load();
@@ -118,8 +119,9 @@ void LiveVoiceProcessor::updateSettings()
 
     dsp::DeEsser::Settings de;
     de.on = p.dsOn->load() > 0.5f;
-    de.split = (int) p.dsMode->load() == (int) params::DsMode::split;
-    de.freq = p.dsFreq->load(); de.thresholdDb = p.dsThr->load();
+    de.mode = juce::jlimit (0, 2, (int) p.dsMode->load());
+    de.freq = p.dsFreq->load(); de.q = p.dsQ->load(); de.thresholdDb = p.dsThr->load();
+    de.listen = soloTarget.load() == soloDeEss;
     de.rangeDb = p.dsRange->load(); de.releaseMs = p.dsRel->load();
     de.relative = p.dsRelative->load() > 0.5f; de.relThresholdDb = p.dsRelThr->load();
     deEsser.setSettings (de);
@@ -151,7 +153,6 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         return;
 
     updateSettings();
-    updateGbfTracker (numSamples);
 
     auto tapMono = [&] (auto&& sink)
     {
@@ -219,8 +220,18 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     eqWasOn = eqOnNow;
     if (eqOnNow) dynEq.process (buffer, numSamples);
 
-    deEsser.process (buffer, numSamples);
-    comp.process (buffer, numSamples);
+    // ---- solo (listen) ----
+    // EQ band solo: hear only that band's region, taken at the EQ output.
+    // De-ess solo: the de-esser outputs its sidechain band.
+    // While soloing, the modules after the soloed one are skipped so the solo isn't coloured.
+    const int solo = soloTarget.load();
+    const bool eqSolo = applyEqSolo (buffer, numSamples, solo);
+    if (! eqSolo)
+    {
+        deEsser.process (buffer, numSamples);
+        if (solo != soloDeEss)
+            comp.process (buffer, numSamples);
+    }
 
     // detector listens to what is actually going to the speakers
     tapMono ([this] (const float* m, int n) { detector.pushSamples (m, n); });
@@ -244,66 +255,34 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     tapMono ([this] (const float* m, int n) { outputTap.push (m, n); });
 }
 
-void LiveVoiceProcessor::updateGbfTracker (int numSamples)
+bool LiveVoiceProcessor::applyEqSolo (juce::AudioBuffer<float>& buffer, int numSamples, int solo)
 {
-    auto& t = gbf;
+    if (! juce::isPositiveAndBelow (solo, params::numEqBands))
+    {
+        lastSoloBand = -1;
+        return false;
+    }
+
+    const auto& d = p.bands[(size_t) solo];
+    const auto shape = params::bandShapeFromChoice (solo, d.type != nullptr ? (int) d.type->load() : 0);
+    if (params::isPassType (shape.type))
+        return false;   // nothing meaningful to solo on a cut filter
+
     const double fs = currentSampleRate.load();
-    const int64_t fourSeconds = (int64_t) (4.0 * fs);
+    const float f = d.freq->load(), q = d.q->load();
+    if (shape.type == params::BandType::lowShelf)       soloCoeffs.lowPass (f, 0.707, fs);
+    else if (shape.type == params::BandType::highShelf) soloCoeffs.highPass (f, 0.707, fs);
+    else                                                soloCoeffs.bandPass (f, std::max (0.7f, q), fs);
 
-    if (gbfResetRequest.exchange (false))
+    if (solo != lastSoloBand) { for (auto& st : soloState) st.reset(); lastSoloBand = solo; }
+
+    const int nCh = std::min (2, buffer.getNumChannels());
+    for (int ch = 0; ch < nCh; ++ch)
     {
-        t.first = t.best = std::numeric_limits<float>::quiet_NaN();
-        t.wasLearning = false;
+        auto* x = buffer.getWritePointer (ch);
+        for (int i = 0; i < numSamples; ++i) x[i] = soloState[(size_t) ch].process (x[i], soloCoeffs);
     }
-
-    const bool learning = p.fbOn->load() > 0.5f && p.fbLearn->load() > 0.5f && p.bypass->load() < 0.5f;
-    const float gainNow = p.inGain->load() + p.outGain->load() + (p.compOn->load() > 0.5f ? p.compMakeup->load() : 0.0f);
-    const int detections = detector.getDetectionCount();
-
-    if (learning && ! t.wasLearning)
-    {
-        // a new ring-out starts a new measurement
-        t.first = t.best = std::numeric_limits<float>::quiet_NaN();
-        t.lastDetectionCount = detections;
-        t.samplesSinceDetection = 0;
-        t.stableRef = gainNow;
-        t.samplesGainStable = 0;
-    }
-
-    if (learning)
-    {
-        if (detections != t.lastDetectionCount)
-        {
-            t.lastDetectionCount = detections;
-            if (std::isnan (t.first)) t.first = gainNow;     // first feedback point
-            t.samplesSinceDetection = 0;
-        }
-        else
-            t.samplesSinceDetection += numSamples;
-
-        if (std::abs (gainNow - t.stableRef) > 0.25f) { t.stableRef = gainNow; t.samplesGainStable = 0; }
-        else t.samplesGainStable += numSamples;
-
-        // this gain has held for 4 s with no new ring: it's stable
-        if (! std::isnan (t.first) && t.samplesSinceDetection >= fourSeconds && t.samplesGainStable >= fourSeconds)
-            t.best = std::isnan (t.best) ? gainNow : std::max (t.best, gainNow);
-    }
-    t.wasLearning = learning;
-
-    gbfFirstRingGain.store (t.first, std::memory_order_relaxed);
-    gbfBestStableGain.store (t.best, std::memory_order_relaxed);
-}
-
-float LiveVoiceProcessor::getGbfGainedDb() const
-{
-    const float first = gbfFirstRingGain.load(), best = gbfBestStableGain.load();
-    if (std::isnan (first) || std::isnan (best)) return std::numeric_limits<float>::quiet_NaN();
-    return std::max (0.0f, best - first);
-}
-
-void LiveVoiceProcessor::resetGbf()
-{
-    gbfResetRequest = true;
+    return true;
 }
 
 void LiveVoiceProcessor::sendNotchCommand (const dsp::FeedbackSuppressor::Command& c)
@@ -357,12 +336,6 @@ void LiveVoiceProcessor::getStateInformation (juce::MemoryBlock& destData)
     ui->setAttribute ("band", selectedBand.load());
     ui->setAttribute ("scale", (double) uiScale.load());
 
-    if (! std::isnan (gbfFirstRingGain.load()))
-    {
-        auto* g = xml->createNewChildElement ("GainBeforeFeedback");
-        g->setAttribute ("firstRing", (double) gbfFirstRingGain.load());
-        if (! std::isnan (gbfBestStableGain.load())) g->setAttribute ("bestStable", (double) gbfBestStableGain.load());
-    }
 
     copyXmlToBinary (*xml, destData);
 }
@@ -378,19 +351,6 @@ void LiveVoiceProcessor::setStateInformation (const void* data, int sizeInBytes)
         presets.setCurrentName (ui->getStringAttribute ("preset", "Default"));
         selectedBand = juce::jlimit (0, params::numEqBands - 1, ui->getIntAttribute ("band", 0));
         uiScale = (float) juce::jlimit (0.6, 1.5, ui->getDoubleAttribute ("scale", 0.85));
-    }
-
-    {
-        const auto nan = std::numeric_limits<float>::quiet_NaN();
-        float first = nan, best = nan;
-        if (auto* g = xml->getChildByName ("GainBeforeFeedback"))
-        {
-            first = (float) g->getDoubleAttribute ("firstRing", nan);
-            if (g->hasAttribute ("bestStable")) best = (float) g->getDoubleAttribute ("bestStable");
-        }
-        // applied on the next audio block (the tracker owns these values)
-        gbf.first = first; gbf.best = best;
-        gbfFirstRingGain = first; gbfBestStableGain = best;
     }
 
     dsp::FeedbackSuppressor::Command clear;
@@ -409,7 +369,6 @@ void LiveVoiceProcessor::setStateInformation (const void* data, int sizeInBytes)
 
     xml->deleteAllChildElementsWithTagName ("FixedNotches");
     xml->deleteAllChildElementsWithTagName ("UiState");
-    xml->deleteAllChildElementsWithTagName ("GainBeforeFeedback");
     apvts.replaceState (juce::ValueTree::fromXml (*xml));
 }
 
