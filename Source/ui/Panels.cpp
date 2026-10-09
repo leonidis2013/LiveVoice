@@ -355,7 +355,8 @@ void HistoryStrip::mouseUp (const juce::MouseEvent& e)
 void HistoryStrip::paint (juce::Graphics& g)
 {
     const auto cfg = getConfig();
-    const auto accent = *cfg.accent;
+    // a disabled module is drawn in grey, with an OFF tag over the graph
+    const auto accent = cfg.on ? *cfg.accent : theme::textFaint;
 
     g.fillAll (theme::panel);
     auto r = getLocalBounds().toFloat().reduced (1.0f);
@@ -395,7 +396,7 @@ void HistoryStrip::paint (juce::Graphics& g)
             const float yIn = yFor (p.levelDb);
             const float comp = p.levelDb - (cfg.on ? p.grDb : 0.0f);
             const float yComp = yFor (comp);
-            g.setColour (theme::input.withAlpha (0.55f));
+            g.setColour (theme::input.withAlpha (cfg.on ? 0.55f : 0.25f));
             g.fillRect (x, yIn, w, area.getBottom() - yIn);
             g.setColour (accent.withAlpha (cfg.on ? 0.9f : 0.35f));
             g.fillRect (x, yComp, w, area.getBottom() - yComp);
@@ -434,15 +435,29 @@ void HistoryStrip::paint (juce::Graphics& g)
     }
 
     const float ty = yFor (cfg.threshold);
-    g.setColour (cfg.on ? theme::text.withAlpha (0.75f) : theme::textFaint);
+    g.setColour (cfg.on ? theme::text.withAlpha (0.75f) : theme::textFaint.withAlpha (0.5f));
     const float dash[] { 5.0f, 3.0f };
     g.drawDashedLine ({ area.getX(), ty, area.getRight(), ty }, dash, 2, 1.0f);
+
+    if (! cfg.on)
+    {
+        g.setColour (theme::panel.withAlpha (0.55f));
+        g.fillRect (area);
+        auto tag = area.withSizeKeepingCentre (std::min (area.getWidth(), 150.0f), 24.0f);
+        g.setColour (theme::panelHi);
+        g.fillRoundedRectangle (tag, 5.0f);
+        g.setColour (theme::border);
+        g.drawRoundedRectangle (tag, 5.0f, 1.0f);
+        g.setColour (theme::textDim);
+        g.setFont (theme::font (11.5f, true));
+        g.drawText (cfg.title + " OFF", tag, juce::Justification::centred);
+    }
 
     // label column: title, threshold, (legend for the stacked view), span button
     g.setColour (accent);
     g.fillRoundedRectangle (labelArea.getX() + 10.0f, labelArea.getY() + 11.0f, 3.0f, 12.0f, 1.5f);
     auto txt = labelArea.withTrimmedLeft (20.0f);
-    g.setColour (theme::text);
+    g.setColour (cfg.on ? theme::text : theme::textFaint);
     g.setFont (theme::font (12.5f, true));
     g.drawText (cfg.title, txt.removeFromTop (34.0f), juce::Justification::centredLeft);
     g.setFont (theme::font (10.5f));
@@ -497,7 +512,7 @@ HistoryStrip::Config CompHistory::getConfig()
     c.lo = -60.0f; c.hi = 0.0f;
     c.threshold = raw (proc, compThr);
     c.thresholdText = "thr " + juce::String (c.threshold, 0) + " dB";
-    c.makeup = raw (proc, compMakeup);
+    c.makeup = proc.comp.getMakeupDb();   // includes auto gain
     return c;
 }
 
@@ -507,7 +522,7 @@ void CompLevelMeter::update()
     const float v = proc.comp.getInputLevelDb();
     const float target = v > in ? v : std::max (v, in - 1.5f);
     const float g = raw (proc, compOn) > 0.5f ? proc.comp.getGainReductionDb() : 0.0f;
-    const float mk = raw (proc, compOn) > 0.5f ? raw (proc, compMakeup) : 0.0f;
+    const float mk = raw (proc, compOn) > 0.5f ? proc.comp.getMakeupDb() : 0.0f;
     if (std::abs (target - in) > 0.1f || std::abs (g - gr) > 0.05f || std::abs (mk - makeup) > 0.05f)
     {
         in = target; gr = g; makeup = mk;
@@ -561,7 +576,7 @@ void CompLevelMeter::paint (juce::Graphics& g)
     g.setColour (gr > 0.2f ? reductionColour : theme::textDim);
     g.drawText ("GR " + juce::String (-gr, 1), foot.removeFromTop (14.0f), juce::Justification::centred);
     g.setColour (makeup > 0.05f ? theme::eq : theme::textFaint);
-    g.drawText ("MU +" + juce::String (makeup, 1), foot, juce::Justification::centred);
+    g.drawText ((raw (proc, compAutoGain) > 0.5f ? "AUTO +" : "MU +") + juce::String (makeup, 1), foot, juce::Justification::centred);
 }
 
 // ================================================================ compressor graph
@@ -775,6 +790,78 @@ void DynActivity::paint (juce::Graphics& g)
     g.drawText ("+" + juce::String (span, 0), s2, juce::Justification::centredRight);
 }
 
+// ================================================================ suggestion bar
+SuggestionBar::SuggestionBar (LiveVoiceProcessor& p, const juce::Colour& a) : proc (p), accent (a)
+{
+    keep.setTooltip ("Keep the suggested settings");
+    revert.setTooltip ("Put back exactly the settings you had before Suggest");
+    keep.onClick = [this] { clear(); };
+    revert.onClick = [this]
+    {
+        proc.undoManager.beginNewTransaction ("Revert suggestion");
+        for (auto& [id, v] : previous) setReal (proc, id, v);
+        clear();
+    };
+    addChildComponent (keep);
+    addChildComponent (revert);
+}
+
+void SuggestionBar::show (const juce::String& text, std::vector<std::pair<juce::String, float>> before)
+{
+    message = text;
+    previous = std::move (before);
+    keep.setVisible (true);
+    revert.setVisible (true);
+    resized();
+    repaint();
+}
+
+void SuggestionBar::showMessage (const juce::String& text)
+{
+    message = text;
+    previous.clear();
+    keep.setVisible (false);
+    revert.setVisible (false);
+    repaint();
+}
+
+void SuggestionBar::clear()
+{
+    message.clear();
+    previous.clear();
+    keep.setVisible (false);
+    revert.setVisible (false);
+    repaint();
+}
+
+void SuggestionBar::resized()
+{
+    auto r = getLocalBounds();
+    if (r.getHeight() >= 60)   // stacked: text above, buttons below
+    {
+        auto row = r.removeFromBottom (22);
+        keep.setBounds (row.removeFromLeft (row.getWidth() / 2).withTrimmedRight (2));
+        revert.setBounds (row.withTrimmedLeft (2));
+    }
+    else                       // one line: text, then buttons on the right
+    {
+        revert.setBounds (r.removeFromRight (64).reduced (0, 1));
+        r.removeFromRight (4);
+        keep.setBounds (r.removeFromRight (52).reduced (0, 1));
+    }
+}
+
+void SuggestionBar::paint (juce::Graphics& g)
+{
+    if (message.isEmpty()) return;
+    auto r = getLocalBounds().toFloat();
+    const bool stacked = r.getHeight() >= 60.0f;
+    auto text = stacked ? r.withTrimmedBottom (26.0f) : r.withTrimmedRight (keep.isVisible() ? 124.0f : 0.0f);
+    g.setColour (accent);
+    g.setFont (theme::font (10.5f, true));
+    g.drawFittedText (message, text.toNearestInt(), stacked ? juce::Justification::topLeft : juce::Justification::centredRight, stacked ? 5 : 1, 0.9f);
+}
+
 // ================================================================ feedback panel
 FeedbackPanel::FeedbackPanel (LiveVoiceProcessor& p) : ModulePanel ("FEEDBACK SUPPRESSION", theme::feedback), proc (p)
 {
@@ -782,16 +869,11 @@ FeedbackPanel::FeedbackPanel (LiveVoiceProcessor& p) : ModulePanel ("FEEDBACK SU
     power.attach (s, fbOn);
 
     mode.attach (s, fbMode, { "Speech", "Singing", "Multipurpose" });
-    width.attach (s, fbWidth, { "Wide 1/5 oct", "Normal 1/10 oct", "Narrow 1/20 oct", "Ultra 1/40 oct" });
-    for (auto* c : { &mode, &width }) addAndMakeVisible (c);
-
-    for (auto [lbl, txt] : { std::pair { &modeLabel, "Mode" }, std::pair { &widthLabel, "Notch width" } })
-    {
-        lbl->setText (txt, juce::dontSendNotification);
-        lbl->setFont (theme::font (11.5f));
-        lbl->setColour (juce::Label::textColourId, theme::textDim);
-        addAndMakeVisible (lbl);
-    }
+    addAndMakeVisible (mode);
+    modeLabel.setText ("Mode", juce::dontSendNotification);
+    modeLabel.setFont (theme::font (11.5f));
+    modeLabel.setColour (juce::Label::textColourId, theme::textDim);
+    addAndMakeVisible (modeLabel);
 
     learn.attach (s, fbLearn);
     freeze.attach (s, fbFreeze);
@@ -821,8 +903,7 @@ FeedbackPanel::FeedbackPanel (LiveVoiceProcessor& p) : ModulePanel ("FEEDBACK SU
     addAndMakeVisible (clearAll);
 
     sens.attach (s, fbSens); depth.attach (s, fbMaxDepth); hold.attach (s, fbHold);
-    maxFixed.attach (s, fbMaxFixed); maxFloat.attach (s, fbMaxFloat); lo.attach (s, fbLoFreq); hi.attach (s, fbHiFreq);
-    for (auto* k : { &sens, &depth, &hold, &maxFixed, &maxFloat, &lo, &hi }) addAndMakeVisible (k);
+    for (auto* k : { &sens, &depth, &hold }) addAndMakeVisible (k);
 
     status.setFont (theme::font (12.0f));
     status.setColour (juce::Label::textColourId, theme::textDim);
@@ -910,34 +991,29 @@ void FeedbackPanel::resized()
     layoutHeader();
     auto r = getContentBounds();
 
-    auto row = r.removeFromTop (16);
-    modeLabel.setBounds (row.removeFromLeft (row.getWidth() / 2));
-    widthLabel.setBounds (row);
-    row = r.removeFromTop (26);
-    mode.setBounds (row.removeFromLeft (row.getWidth() / 2).withTrimmedRight (5));
-    width.setBounds (row.withTrimmedLeft (5));
+    auto row = r.removeFromTop (26);
+    modeLabel.setBounds (row.removeFromLeft (44));
+    mode.setBounds (row);
 
     r.removeFromTop (8);
     row = r.removeFromTop (28);
-    const int bw = row.getWidth() / 4;
-    learn.setBounds (row.removeFromLeft (bw + 30).withTrimmedRight (4));
-    freeze.setBounds (row.removeFromLeft (bw - 18).withTrimmedRight (4));
-    clearFloat.setBounds (row.removeFromLeft (bw + 6).withTrimmedRight (4));
-    clearAll.setBounds (row);
+    learn.setBounds (row.removeFromLeft (row.getWidth() / 2).withTrimmedRight (3));
+    freeze.setBounds (row.withTrimmedLeft (3));
+    r.removeFromTop (6);
+    row = r.removeFromTop (28);
+    clearFloat.setBounds (row.removeFromLeft (row.getWidth() / 2).withTrimmedRight (3));
+    clearAll.setBounds (row.withTrimmedLeft (3));
 
-    r.removeFromTop (10);
     auto statusRow = r.removeFromBottom (22);
     logBtn.setBounds (statusRow.removeFromRight (56));
     status.setBounds (statusRow);
     r.removeFromBottom (6);
-
-    const int knobH = std::min (96, (r.getHeight() - 12) / 2);
-    row = r.removeFromTop (knobH);
-    const int kw4 = row.getWidth() / 4;
-    for (auto* k : { &sens, &depth, &hold, &lo }) k->setBounds (row.removeFromLeft (kw4));
     r.removeFromTop (12);
+
+    const int knobH = std::min (104, r.getHeight());
     row = r.removeFromTop (knobH);
-    for (auto* k : { &hi, &maxFixed, &maxFloat }) k->setBounds (row.removeFromLeft (kw4));
+    const int kw = row.getWidth() / 3;
+    for (auto* k : { &sens, &depth, &hold }) k->setBounds (row.removeFromLeft (kw));
 }
 
 void FeedbackPanel::update()
@@ -983,14 +1059,11 @@ EqPanel::EqPanel (LiveVoiceProcessor& p) : ModulePanel ("DYNAMIC EQ", theme::eq)
     suggest.setColour (juce::TextButton::buttonOnColourId, theme::eq);
     suggest.setColour (juce::TextButton::textColourOnId, theme::onAccent);
     suggest.setTooltip ("Suggest: press while the pastor talks normally. After 20 s LiveVoice suggests a high-pass and gentle cuts "
-                        "where this voice builds up (boom, box, nasal, harsh). Static gains only. UNDO in the header reverts it.");
-    suggest.onClick = [this] { clickSuggest (proc, LiveVoiceProcessor::CaptureTarget::eq); statusLbl.setText ({}, juce::dontSendNotification); };
-    statusLbl.setFont (theme::font (10.5f));
-    statusLbl.setColour (juce::Label::textColourId, theme::eq);
-    statusLbl.setJustificationType (juce::Justification::centredRight);
+                        "where this voice builds up (boom, box, nasal, harsh). Static gains only. KEEP or REVERT appears next to the result.");
+    suggest.onClick = [this] { clickSuggest (proc, LiveVoiceProcessor::CaptureTarget::eq); suggestion.clear(); };
 
     for (auto* c : { (juce::Component*) &bandOn, (juce::Component*) &dynamic, (juce::Component*) &type,
-                     (juce::Component*) &solo, (juce::Component*) &activity, (juce::Component*) &suggest, (juce::Component*) &statusLbl })
+                     (juce::Component*) &solo, (juce::Component*) &activity, (juce::Component*) &suggest, (juce::Component*) &suggestion })
         addAndMakeVisible (c);
     for (auto* k : { &freq, &gain, &q, &thr, &range, &ratio, &attack, &release }) addAndMakeVisible (k);
 
@@ -1045,7 +1118,7 @@ void EqPanel::resized()
     dynamic.setBounds (row.removeFromLeft (78).withTrimmedRight (5));
     solo.setBounds (row.removeFromLeft (56).withTrimmedRight (5));
     suggest.setBounds (row);
-    statusLbl.setBounds (100, 6, getWidth() - 160, 22);
+    suggestion.setBounds (110, 6, getWidth() - 172, 22);
 
     r.removeFromTop (8);
     const int knobH = std::min (96, (r.getHeight() - 12) / 2);
@@ -1102,12 +1175,19 @@ void EqPanel::runSuggestion()
     const auto s = dsp::analysis::suggestEq (audio.data(), (int) audio.size(), proc.currentSampleRate.load());
     if (! s.ok)
     {
-        statusLbl.setText ("Not enough voice heard - try again while someone talks", juce::dontSendNotification);
+        suggestion.showMessage ("Not enough voice heard - try again while someone talks");
         return;
     }
+
+    // remember exactly what was there, so REVERT can put it back
+    std::vector<std::pair<juce::String, float>> before;
+    auto remember = [&] (const juce::String& id) { before.emplace_back (id, raw (proc, id)); };
+    for (int b = 0; b < numEqBands; ++b) { remember (bOn (b)); remember (bFreq (b)); remember (bGain (b)); remember (bQ (b)); }
+    remember (bType (0)); remember (bType (numEqBands - 1));
+
     proc.undoManager.beginNewTransaction ("EQ suggest");
     setReal (proc, bOn (0), 1.0f); setReal (proc, bType (0), 5.0f); setReal (proc, bFreq (0), s.hpFreq);
-    juce::String txt = "Suggested: HPF " + juce::String (juce::roundToInt (s.hpFreq));
+    juce::String txt = "HPF " + juce::String (juce::roundToInt (s.hpFreq));
     for (int i = 0; i < 4; ++i)
     {
         const int b = i + 1;
@@ -1116,12 +1196,12 @@ void EqPanel::runSuggestion()
         setReal (proc, bGain (b), s.bands[i].gainDb);
         setReal (proc, bQ (b), s.bands[i].q);
         if (s.bands[i].gainDb < -0.05f)
-            txt << ", " << (s.bands[i].freq >= 1000.0f ? juce::String (s.bands[i].freq / 1000.0f, 1) + "k" : juce::String (juce::roundToInt (s.bands[i].freq)))
+            txt << ",  " << (s.bands[i].freq >= 1000.0f ? juce::String (s.bands[i].freq / 1000.0f, 1) + "k" : juce::String (juce::roundToInt (s.bands[i].freq)))
                 << " " << juce::String (s.bands[i].gainDb, 1);
     }
     setReal (proc, bOn (5), 1.0f); setReal (proc, bType (5), 1.0f); setReal (proc, bGain (5), s.airGainDb);
-    if (s.airGainDb > 0.05f) txt << ", air +" << juce::String (s.airGainDb, 1);
-    statusLbl.setText (txt + "  (UNDO reverts)", juce::dontSendNotification);
+    if (s.airGainDb > 0.05f) txt << ",  air +" << juce::String (s.airGainDb, 1);
+    suggestion.show ("Suggested: " + txt, std::move (before));
 }
 
 // ================================================================ de-esser panel
@@ -1144,14 +1224,10 @@ DeEssPanel::DeEssPanel (LiveVoiceProcessor& p) : ModulePanel ("DE-ESSER", theme:
     suggest.setColour (juce::TextButton::buttonOnColourId, theme::deess);
     suggest.setColour (juce::TextButton::textColourOnId, theme::onAccent);
     suggest.setTooltip ("Suggest: press while the pastor talks normally. After 20 s LiveVoice sets Freq, Width and Threshold "
-                        "for this voice. Press again to cancel; UNDO in the header reverts it.");
-    suggest.onClick = [this] { clickSuggest (proc, LiveVoiceProcessor::CaptureTarget::deEss); status.setText ({}, juce::dontSendNotification); };
+                        "for this voice. Press again to cancel. KEEP or REVERT appears next to the result.");
+    suggest.onClick = [this] { clickSuggest (proc, LiveVoiceProcessor::CaptureTarget::deEss); suggestion.clear(); };
     addAndMakeVisible (suggest);
-    status.setFont (theme::font (10.5f));
-    status.setColour (juce::Label::textColourId, theme::deess);
-    status.setJustificationType (juce::Justification::topLeft);
-    status.setMinimumHorizontalScale (1.0f);
-    addAndMakeVisible (status);
+    addAndMakeVisible (suggestion);
 
     freq.attach (s, dsFreq); width.attach (s, dsQ); range.attach (s, dsRange); rel.attach (s, dsRel);
     bindThreshold();
@@ -1205,7 +1281,7 @@ void DeEssPanel::resized()
     r.removeFromTop (8);
     row = r.removeFromTop (knobH);
     rel.setBounds (row.removeFromLeft (kw));
-    status.setBounds (row.reduced (2, 4));
+    suggestion.setBounds (row.reduced (2, 2));
 }
 
 void DeEssPanel::update()
@@ -1228,9 +1304,13 @@ void DeEssPanel::runSuggestion()
     const auto s = dsp::analysis::suggestDeEss (audio.data(), (int) audio.size(), proc.currentSampleRate.load());
     if (! s.ok)
     {
-        status.setText ("Not enough \"s\" sounds heard.\nTry again while someone talks.", juce::dontSendNotification);
+        suggestion.showMessage ("Not enough \"s\" sounds heard. Try again while someone talks.");
         return;
     }
+    std::vector<std::pair<juce::String, float>> before;
+    for (auto* id : { &dsMode, &dsFreq, &dsQ, &dsThr, &dsRelThr })
+        before.emplace_back (*id, raw (proc, *id));
+
     proc.undoManager.beginNewTransaction ("De-esser suggest");
     setReal (proc, dsMode, (float) DsMode::band);
     setReal (proc, dsFreq, s.freq);
@@ -1238,8 +1318,9 @@ void DeEssPanel::runSuggestion()
     setReal (proc, dsThr, s.thresholdDb);
     setReal (proc, dsRelThr, s.relThresholdDb);
     const bool relMode = raw (proc, dsRelative) > 0.5f;
-    status.setText ("Suggested:\n" + juce::String (s.freq / 1000.0f, 2) + " kHz, Q " + juce::String (s.q, 1) + "\nthr "
-                    + juce::String (relMode ? s.relThresholdDb : s.thresholdDb, 0) + " dB  (UNDO reverts)", juce::dontSendNotification);
+    const int thrShown = juce::roundToInt (relMode ? s.relThresholdDb : s.thresholdDb);
+    suggestion.show ("Suggested: " + juce::String (s.freq / 1000.0f, 1) + " kHz, Q " + juce::String (s.q, 1)
+                     + ", " + (relMode ? "rel thr " : "thr ") + juce::String (thrShown) + " dB", std::move (before));
 }
 
 // ================================================================ PSE panel
@@ -1251,8 +1332,8 @@ PsePanel::PsePanel (LiveVoiceProcessor& p) : ModulePanel ("PSE", theme::pse), pr
                          "and lowering the chance of feedback while the mic is idle. Set the threshold just below the softest speech.");
     addAndMakeVisible (keyMeter);
     thr.attach (s, pseThr); range.attach (s, pseRange); attack.attach (s, pseAttack);
-    hold.attach (s, pseHold); release.attach (s, pseRelease); scHp.attach (s, pseScHp); scLp.attach (s, pseScLp);
-    for (auto* k : { &thr, &range, &attack, &hold, &release, &scHp, &scLp }) addAndMakeVisible (k);
+    hold.attach (s, pseHold); release.attach (s, pseRelease);
+    for (auto* k : { &thr, &range, &attack, &hold, &release }) addAndMakeVisible (k);
 }
 
 void PsePanel::resized()
@@ -1260,17 +1341,14 @@ void PsePanel::resized()
     layoutHeader();
     auto r = getContentBounds();
     keyMeter.setBounds (r.removeFromTop (40));
-    r.removeFromTop (8);
-    const int knobH = std::min (92, (r.getHeight() - 16) / 3);
-    const int kw = r.getWidth() / 3;
+    r.removeFromTop (10);
+    const int knobH = std::min (96, (r.getHeight() - 10) / 2);
     auto row = r.removeFromTop (knobH);
+    const int kw = row.getWidth() / 3;
     for (auto* k : { &thr, &range, &attack }) k->setBounds (row.removeFromLeft (kw));
-    r.removeFromTop (8);
-    row = r.removeFromTop (knobH);
+    r.removeFromTop (10);
+    row = r.removeFromTop (knobH).withTrimmedLeft (kw / 2);
     for (auto* k : { &hold, &release }) k->setBounds (row.removeFromLeft (kw));
-    r.removeFromTop (8);
-    row = r.removeFromTop (knobH);
-    for (auto* k : { &scHp, &scLp }) k->setBounds (row.removeFromLeft (kw));
 }
 
 void PsePanel::update()
@@ -1286,11 +1364,16 @@ CompPanel::CompPanel (LiveVoiceProcessor& p) : ModulePanel ("COMPRESSOR", theme:
     autoRel.attach (s, compAuto);
     autoRel.setTooltip ("Program-dependent release: recovers quickly after short peaks and more gently after sustained "
                         "compression, like an optical compressor. The Release knob sets the overall speed.");
+    autoGain.attach (s, compAutoGain);
+    autoGain.setTooltip ("Auto gain: adds back the average level the compressor takes away (measured while someone talks), "
+                         "so turning the compressor on or changing Threshold/Ratio doesn't change the overall loudness. "
+                         "Makeup still adds on top.");
     addAndMakeVisible (autoRel);
+    addAndMakeVisible (autoGain);
     thr.attach (s, compThr); ratio.attach (s, compRatio); knee.attach (s, compKnee);
     attack.attach (s, compAttack); release.attach (s, compRelease); makeup.attach (s, compMakeup);
-    mix.attach (s, compMix); scHp.attach (s, compScHp);
-    for (auto* k : { &thr, &ratio, &knee, &attack, &release, &makeup, &mix, &scHp }) addAndMakeVisible (k);
+    mix.attach (s, compMix);
+    for (auto* k : { &thr, &ratio, &knee, &attack, &release, &makeup, &mix }) addAndMakeVisible (k);
     addAndMakeVisible (levelMeter);
 }
 
@@ -1301,7 +1384,9 @@ void CompPanel::resized()
     levelMeter.setBounds (r.removeFromRight (64));
     r.removeFromRight (4);
 
-    autoRel.setBounds (r.removeFromTop (26).withTrimmedRight (r.getWidth() / 3));
+    auto top = r.removeFromTop (26);
+    autoRel.setBounds (top.removeFromLeft (top.getWidth() / 2).withTrimmedRight (3));
+    autoGain.setBounds (top.withTrimmedLeft (3));
     r.removeFromTop (8);
     const int knobH = std::min (92, (r.getHeight() - 16) / 3);
     const int kw = r.getWidth() / 3;
@@ -1312,12 +1397,58 @@ void CompPanel::resized()
     for (auto* k : { &attack, &release, &makeup }) k->setBounds (row.removeFromLeft (kw));
     r.removeFromTop (8);
     row = r.removeFromTop (knobH);
-    for (auto* k : { &mix, &scHp }) k->setBounds (row.removeFromLeft (kw));
+    mix.setBounds (row.removeFromLeft (kw));
 }
 
 void CompPanel::update()
 {
     levelMeter.update();
+}
+
+// ================================================================ level match
+LevelMatch::LevelMatch (LiveVoiceProcessor& p) : proc (p)
+{
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    setTooltip ("Output vs input loudness, measured while someone talks (last few seconds). "
+                "Green = level: LiveVoice isn't making the voice louder or quieter overall. Click to set OUTPUT so they match.");
+}
+
+void LevelMatch::update()
+{
+    const bool v = proc.levelMatchValid();
+    const float d = v ? std::round (proc.getOutputVsInputDb() * 2.0f) / 2.0f : 0.0f;   // 0.5 dB steps, no flicker
+    if (v != valid || std::abs (d - shown) > 0.01f)
+    {
+        valid = v; shown = d;
+        repaint();
+    }
+}
+
+void LevelMatch::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (0.5f);
+    const bool level = valid && std::abs (shown) < 1.0f;
+    const auto c = ! valid ? theme::textFaint : (level ? theme::good : (std::abs (shown) < 3.0f ? theme::warn : theme::danger));
+    g.setColour (theme::panel);
+    g.fillRoundedRectangle (r, 5.0f);
+    g.setColour (c.withAlpha (valid ? 0.9f : 0.5f));
+    g.drawRoundedRectangle (r, 5.0f, 1.2f);
+
+    auto top = r.removeFromTop (r.getHeight() * 0.45f);
+    g.setFont (theme::font (9.0f, true));
+    g.setColour (theme::textDim);
+    g.drawText ("OUT vs IN", top, juce::Justification::centredBottom);
+    g.setFont (theme::font (12.0f, true));
+    g.setColour (c);
+    juce::String t = "--";
+    if (valid) t = level ? "LEVEL" : (shown > 0.0f ? "+" : "") + juce::String (shown, 1) + " dB";
+    g.drawText (t, r, juce::Justification::centredTop);
+}
+
+void LevelMatch::mouseUp (const juce::MouseEvent& e)
+{
+    if (e.mouseWasClicked() && proc.levelMatchValid())
+        proc.matchOutputToInput();
 }
 
 // ================================================================ header
@@ -1354,21 +1485,13 @@ HeaderBar::HeaderBar (LiveVoiceProcessor& p) : proc (p)
                            "so you can hear what LiveVoice is doing. Output 1 (FOH) is never affected.");
     monitorBtn.onClick = [this] { proc.monitorDry = ! proc.monitorDry.load(); };
 
-    zoomOut.onClick = [this] { if (onZoom) onZoom (-0.1f); };
-    zoomIn.onClick  = [this] { if (onZoom) onZoom (0.1f); };
-    zoomFit.onClick = [this] { if (onZoom) onZoom (0.0f); };
-    zoomOut.setTooltip ("Smaller window");
-    zoomIn.setTooltip ("Larger window");
-    zoomFit.setTooltip ("Fit the window to this screen");
-    settingsBtn.setTooltip ("Settings");
-    settingsBtn.onClick = [this] { showSettingsMenu(); };
+    settingsBtn.setTooltip ("Display, outputs, feedback limits and detector filters");
+    settingsBtn.onClick = [this] { if (onOpenSettings) onOpenSettings(); };
 
     inGain.attach (s, params::inGain);
     outGain.attach (s, params::outGain);
-    ceiling.attach (s, params::ceiling);
-    limit.attach (s, params::limitOn);
     bypass.attach (s, params::bypass);
-    for (auto* k : { &inGain, &outGain, &ceiling })
+    for (auto* k : { &inGain, &outGain })
     {
         k->slider.setSliderStyle (juce::Slider::LinearHorizontal);
         k->slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 58, 18);
@@ -1377,39 +1500,12 @@ HeaderBar::HeaderBar (LiveVoiceProcessor& p) : proc (p)
         addAndMakeVisible (k);
     }
 
-    lightBtn.setToggleState (theme::lightMode, juce::dontSendNotification);
-    lightBtn.setTooltip ("Switch between the dark and light themes (remembered for next time).");
-    lightBtn.onClick = [this] { if (onThemeToggle) onThemeToggle(); };
-
     for (auto* c : { (juce::Component*) &saveBtn, (juce::Component*) &deleteBtn, (juce::Component*) &undoBtn, (juce::Component*) &redoBtn,
                      (juce::Component*) &slotA, (juce::Component*) &slotB, (juce::Component*) &copyBtn, (juce::Component*) &monitorBtn,
-                     (juce::Component*) &zoomOut, (juce::Component*) &zoomFit, (juce::Component*) &zoomIn, (juce::Component*) &settingsBtn,
-                     (juce::Component*) &limit, (juce::Component*) &bypass, (juce::Component*) &limMeter, (juce::Component*) &lightBtn })
+                     (juce::Component*) &settingsBtn, (juce::Component*) &levelMatch, (juce::Component*) &bypass })
         addAndMakeVisible (c);
 
     refreshPresetList();
-}
-
-void HeaderBar::showSettingsMenu()
-{
-    juce::PopupMenu m;
-    m.addSectionHeader ("LiveVoice " LIVEVOICE_VERSION);
-    m.addItem (1, "Solo to FOH output (only if output 2 isn't wired)", true, proc.soloToMain.load());
-    m.addItem (2, "Output 2 (Monitor): dry input (A/B)", true, proc.monitorDry.load());
-   #if LIVEVOICE_USE_OPENGL
-    m.addItem (3, "GPU drawing (lower CPU)", true, isGpuOn ? isGpuOn() : false);
-   #endif
-    m.addSeparator();
-    m.addItem (4, "Fit window to screen");
-    juce::Component::SafePointer<HeaderBar> safe (this);
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&settingsBtn), [safe] (int r)
-    {
-        if (safe == nullptr) return;
-        if (r == 1) safe->proc.soloToMain = ! safe->proc.soloToMain.load();
-        if (r == 2) safe->proc.monitorDry = ! safe->proc.monitorDry.load();
-        if (r == 3 && safe->onGpuToggle) safe->onGpuToggle();
-        if (r == 4 && safe->onZoom) safe->onZoom (0.0f);
-    });
 }
 
 void HeaderBar::paint (juce::Graphics& g)
@@ -1433,13 +1529,13 @@ void HeaderBar::resized()
     auto left = [&] (juce::Component& c, int w, int gap) { c.setBounds (centreRow (r.removeFromLeft (w))); r.removeFromLeft (gap); };
     auto right = [&] (juce::Component& c, int w, int gap) { c.setBounds (centreRow (r.removeFromRight (w))); r.removeFromRight (gap); };
 
-    left (presetBox, 200, 5); left (saveBtn, 52, 3); left (deleteBtn, 58, 12);
-    left (undoBtn, 50, 3); left (redoBtn, 50, 12);
-    left (slotA, 28, 2); left (slotB, 28, 3); left (copyBtn, 40, 12);
+    left (presetBox, 210, 5); left (saveBtn, 52, 3); left (deleteBtn, 58, 14);
+    left (undoBtn, 52, 3); left (redoBtn, 52, 14);
+    left (slotA, 28, 2); left (slotB, 28, 3); left (copyBtn, 42, 14);
 
-    right (bypass, 74, 6); right (lightBtn, 56, 6); right (settingsBtn, 32, 10);
-    right (zoomIn, 26, 2); right (zoomFit, 38, 2); right (zoomOut, 26, 10);
-    right (monitorBtn, 72, 12);
+    right (bypass, 74, 8); right (settingsBtn, 84, 12); right (monitorBtn, 78, 16);
+    levelMatch.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, 34).withY (cy - 17));
+    r.removeFromRight (8);
 
     // [label][slider........][value]
     auto gainBlock = [&] (Knob& k, int width)
@@ -1449,21 +1545,14 @@ void HeaderBar::resized()
         auto kb = k.getLocalBounds();
         k.label.setBounds (kb.removeFromLeft (52));
         k.slider.setBounds (kb);
-        r.removeFromRight (10);
-        return b;
+        r.removeFromRight (12);
     };
-
-    auto cb = gainBlock (ceiling, 170);
-    limMeter.setBounds (cb.getX() + 52, cy + 13, cb.getWidth() - 52, 10);
-    right (limit, 54, 10);
-    gainBlock (outGain, 180);
-    gainBlock (inGain, 180);
+    gainBlock (outGain, 190);
+    gainBlock (inGain, 190);
 }
 
 void HeaderBar::update()
 {
-    limMeter.setValue (proc.limiter.getGainReductionDb());
-    if (lightBtn.getToggleState() != theme::lightMode) lightBtn.setToggleState (theme::lightMode, juce::dontSendNotification);
     undoBtn.setEnabled (proc.undoManager.canUndo());
     redoBtn.setEnabled (proc.undoManager.canRedo());
     slotA.setToggleState (proc.getActiveSlot() == 0, juce::dontSendNotification);
@@ -1473,6 +1562,7 @@ void HeaderBar::update()
     monitorBtn.setToggleState (dry, juce::dontSendNotification);
     monitorBtn.setButtonText (dry ? "MON: DRY" : "MON: FX");
     monitorBtn.setEnabled (proc.isMonitorBusActive());
+    levelMatch.update();
 }
 
 void HeaderBar::refreshPresetList()
@@ -1515,7 +1605,7 @@ void HeaderBar::presetChosen()
 void HeaderBar::savePreset()
 {
     dialog = std::make_unique<juce::AlertWindow> ("Save preset",
-        "Saves the PSE, feedback, dynamic EQ, de-esser and compressor settings.\nGain, limiter and learned notches are not part of presets.",
+        "Saves the PSE, feedback, dynamic EQ, de-esser and compressor settings.\nGain and learned notches are not part of presets.",
         juce::MessageBoxIconType::NoIcon, this);
     dialog->addTextEditor ("name", proc.presets.getCurrentName(), "Name:");
     dialog->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));

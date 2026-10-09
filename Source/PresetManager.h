@@ -6,7 +6,7 @@
 //
 // A preset holds the *voice* settings: feedback behaviour, dynamic EQ and
 // de-esser. It deliberately does NOT touch input/output gain, the safety
-// limiter, bypass, Learn/Freeze, or the learned notches — those belong to
+// bypass, Learn/Freeze, or the learned notches — those belong to
 // the room and the channel, so switching voices mid-service never changes
 // gain staging or forgets the ring-out.
 class PresetManager

@@ -23,7 +23,7 @@ juce::File PresetManager::getUserPresetDirectory()
 
 bool PresetManager::isPresetParameter (const juce::String& id)
 {
-    static const juce::StringArray excluded { params::inGain, params::outGain, params::limitOn, params::ceiling,
+    static const juce::StringArray excluded { params::inGain, params::outGain,
                                               params::bypass, params::fbLearn, params::fbFreeze };
     return ! excluded.contains (id);
 }

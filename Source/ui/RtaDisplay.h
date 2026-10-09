@@ -54,6 +54,7 @@ private:
 
     void renderGrid();
     void drawDeEss (juce::Graphics&);
+    void drawEqSolo (juce::Graphics&);
     void drawNotchMarkers (juce::Graphics&);
     void drawHandles (juce::Graphics&);
 

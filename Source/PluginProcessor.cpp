@@ -10,7 +10,7 @@ LiveVoiceProcessor::LiveVoiceProcessor()
 {
     auto raw = [this] (const juce::String& id) { return apvts.getRawParameterValue (id); };
     using namespace params;
-    p.inGain = raw (inGain); p.outGain = raw (outGain); p.limitOn = raw (limitOn); p.ceiling = raw (ceiling); p.bypass = raw (bypass);
+    p.inGain = raw (inGain); p.outGain = raw (outGain); p.bypass = raw (bypass);
     p.fbOn = raw (fbOn); p.fbMode = raw (fbMode); p.fbSens = raw (fbSens); p.fbLearn = raw (fbLearn); p.fbFreeze = raw (fbFreeze);
     p.fbMaxFixed = raw (fbMaxFixed); p.fbMaxFloat = raw (fbMaxFloat); p.fbMaxDepth = raw (fbMaxDepth); p.fbWidth = raw (fbWidth);
     p.fbHold = raw (fbHold); p.fbLo = raw (fbLoFreq); p.fbHi = raw (fbHiFreq);
@@ -28,7 +28,7 @@ LiveVoiceProcessor::LiveVoiceProcessor()
     p.pseHold = raw (pseHold); p.pseRelease = raw (pseRelease); p.pseScHp = raw (pseScHp); p.pseScLp = raw (pseScLp);
     p.compOn = raw (compOn); p.compThr = raw (compThr); p.compRatio = raw (compRatio); p.compKnee = raw (compKnee);
     p.compAttack = raw (compAttack); p.compRelease = raw (compRelease); p.compAuto = raw (compAuto); p.compMakeup = raw (compMakeup);
-    p.compMix = raw (compMix); p.compScHp = raw (compScHp);
+    p.compMix = raw (compMix); p.compScHp = raw (compScHp); p.compAutoGain = raw (compAutoGain);
 }
 
 LiveVoiceProcessor::~LiveVoiceProcessor()
@@ -59,7 +59,6 @@ void LiveVoiceProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     feedback.prepare (sampleRate, nCh);
     dynEq.prepare (sampleRate, nCh);
     deEsser.prepare (sampleRate, nCh);
-    limiter.prepare (sampleRate);
     pse.prepare (sampleRate, nCh);
     comp.prepare (sampleRate, nCh);
     detector.prepare (sampleRate);
@@ -130,6 +129,7 @@ void LiveVoiceProcessor::updateSettings()
     de.freq = p.dsFreq->load(); de.q = p.dsQ->load(); de.thresholdDb = p.dsThr->load();
     de.rangeDb = p.dsRange->load(); de.releaseMs = p.dsRel->load();
     de.relative = p.dsRelative->load() > 0.5f; de.relThresholdDb = p.dsRelThr->load();
+    de.listen = deEssListen.load();
     deEsser.setSettings (de);
 
     dsp::PrimarySourceExpander::Settings ps;
@@ -144,6 +144,7 @@ void LiveVoiceProcessor::updateSettings()
     cs.thresholdDb = p.compThr->load(); cs.ratio = p.compRatio->load(); cs.kneeDb = p.compKnee->load();
     cs.attackMs = p.compAttack->load(); cs.releaseMs = p.compRelease->load(); cs.autoRelease = p.compAuto->load() > 0.5f;
     cs.makeupDb = p.compMakeup->load(); cs.mix = p.compMix->load() * 0.01f; cs.scHpHz = p.compScHp->load();
+    cs.autoGain = p.compAutoGain->load() > 0.5f;
     comp.setSettings (cs);
 }
 
@@ -282,7 +283,7 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     if (soloOnMain)
         for (int ch = 0; ch < nCh; ++ch) main.copyFrom (ch, 0, soloSig, ch, 0, numSamples);
 
-    // ---- output trim + safety limiter ----
+    // ---- output trim ----
     outGainSmooth.setTargetValue (dsp::dbToGain (p.outGain->load()));
     if (outGainSmooth.isSmoothing())
     {
@@ -295,7 +296,28 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     else
         main.applyGain (0, numSamples, outGainSmooth.getTargetValue());
 
-    limiter.process (main, numSamples, p.limitOn->load() > 0.5f, p.ceiling->load());
+    // ---- level match: gated ~3 s loudness of the raw input vs the output ----
+    {
+        double eIn = 0.0, eOut = 0.0;
+        for (int ch = 0; ch < nCh; ++ch)
+        {
+            const float* a = dry.getReadPointer (ch);
+            const float* b = main.getReadPointer (ch);
+            for (int i = 0; i < numSamples; ++i) { eIn += (double) a[i] * a[i]; eOut += (double) b[i] * b[i]; }
+        }
+        eIn /= (double) (numSamples * nCh);
+        eOut /= (double) (numSamples * nCh);
+        if (const float adj = levelAdjustDb.exchange (0.0f); std::abs (adj) > 1.0e-4f)
+            powOut *= std::pow (10.0, adj / 10.0);
+        if (eIn > 1.0e-6)   // only while someone is talking (above about -60 dBFS)
+        {
+            const double a = std::exp (-(double) numSamples / (3.0 * currentSampleRate.load()));
+            powIn = a * powIn + (1.0 - a) * eIn;
+            powOut = a * powOut + (1.0 - a) * eOut;
+            loudIn.store ((float) (10.0 * std::log10 (powIn + 1.0e-12)), std::memory_order_relaxed);
+            loudOut.store ((float) (10.0 * std::log10 (powOut + 1.0e-12)), std::memory_order_relaxed);
+        }
+    }
 
     storePeak (outputPeakDb, blockPeak (main));
     tapMono (main, [this] (const float* m, int n) { outputTap.push (m, n); });
@@ -409,6 +431,20 @@ void LiveVoiceProcessor::selectSlot (int slot)
 void LiveVoiceProcessor::copyActiveToOther()
 {
     slots[(size_t) (1 - activeSlot)] = presets.captureValues();
+}
+
+void LiveVoiceProcessor::matchOutputToInput()
+{
+    if (! levelMatchValid()) return;
+    auto* rp = apvts.getParameter (params::outGain);
+    const float current = rp->convertFrom0to1 (rp->getValue());
+    const float target = juce::jlimit (-24.0f, 24.0f, current - getOutputVsInputDb());
+    undoManager.beginNewTransaction ("Match output level");
+    rp->beginChangeGesture();
+    rp->setValueNotifyingHost (rp->convertTo0to1 (target));
+    rp->endChangeGesture();
+    // the measured output moves over ~3 s; tell the audio thread to jump its estimate now
+    levelAdjustDb.store (levelAdjustDb.load() + (target - current));
 }
 
 void LiveVoiceProcessor::sendNotchCommand (const dsp::FeedbackSuppressor::Command& c)

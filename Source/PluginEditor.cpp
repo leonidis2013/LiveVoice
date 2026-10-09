@@ -9,6 +9,7 @@ LiveVoiceEditor::LiveVoiceEditor (LiveVoiceProcessor& p) : AudioProcessorEditor 
                      (juce::Component*) &psePanel, (juce::Component*) &feedbackPanel, (juce::Component*) &eqPanel,
                      (juce::Component*) &deEssPanel, (juce::Component*) &compPanel })
         canvas.addAndMakeVisible (c);
+    canvas.addChildComponent (settings);   // overlay, on top of everything
     layoutCanvas();
 
     // selecting a band on the RTA and in the EQ panel stay in sync
@@ -16,11 +17,14 @@ LiveVoiceEditor::LiveVoiceEditor (LiveVoiceProcessor& p) : AudioProcessorEditor 
     eqPanel.onBandSelected = [this] (int b) { rta.setSelectedBand (b); };
     rta.setSelectedBand (proc.selectedBand.load());
 
-    header.onThemeToggle = [this] { toggleTheme(); };
-    header.onZoom = [this] (float step) { zoom (step); };
+    header.onOpenSettings = [this] { openSettings(); };
+    settings.onClose = [this] { settings.setVisible (false); };
+    settings.onThemeToggle = [this] { toggleTheme(); settings.update(); };
+    settings.onSetScale = [this] (float sc) { setScale (sc); };
+    settings.getScale = [this] { return (float) getWidth() / (float) designWidth; };
    #if LIVEVOICE_USE_OPENGL
-    header.isGpuOn = [this] { return glContext.isAttached(); };
-    header.onGpuToggle = [this] { setGpu (! glContext.isAttached()); };
+    settings.isGpuOn = [this] { return glContext.isAttached(); };
+    settings.setGpu = [this] (bool on) { setGpu (on); };
    #endif
     deEssHistory.onSpanChanged = [this] { compHistory.update(); };
     compHistory.onSpanChanged = [this] { deEssHistory.update(); };
@@ -64,6 +68,7 @@ void LiveVoiceEditor::resized()
 void LiveVoiceEditor::layoutCanvas()
 {
     auto r = canvas.getLocalBounds();
+    settings.setBounds (r);
     header.setBounds (r.removeFromTop (52));
     r.reduce (10, 8);
 
@@ -88,7 +93,7 @@ void LiveVoiceEditor::layoutCanvas()
     // signal flow, left to right: PSE > Feedback > Dynamic EQ > De-esser > Compressor
     constexpr int gap = 12;
     const int w = bottom.getWidth() - 4 * gap;
-    const float share[] { 0.152f, 0.258f, 0.278f, 0.144f, 0.168f };
+    const float share[] { 0.150f, 0.205f, 0.300f, 0.160f, 0.185f };
     juce::Component* panels[] { &psePanel, &feedbackPanel, &eqPanel, &deEssPanel, &compPanel };
     canvas.gaps.clear();
     for (int i = 0; i < 5; ++i)
@@ -135,11 +140,15 @@ float LiveVoiceEditor::fitScale() const
     return juce::jlimit (0.5f, 1.5f, s);
 }
 
-void LiveVoiceEditor::zoom (float step)
+void LiveVoiceEditor::setScale (float scale)
 {
-    const float current = (float) getWidth() / (float) designWidth;
-    const float s = std::abs (step) < 1.0e-4f ? fitScale() : juce::jlimit (0.5f, 1.5f, std::round ((current + step) * 10.0f) / 10.0f);
+    const float s = scale <= 0.0f ? fitScale() : juce::jlimit (0.5f, 1.5f, scale);
     setSize (juce::roundToInt (designWidth * s), juce::roundToInt (designHeight * s));
+}
+
+void LiveVoiceEditor::openSettings()
+{
+    settings.open();
 }
 
 void LiveVoiceEditor::setGpu (bool on)
@@ -172,5 +181,6 @@ void LiveVoiceEditor::timerCallback()
         eqPanel.update();
         deEssPanel.update();
         proc.pollFeedbackLog();
+        if (settings.isVisible()) settings.update();
     }
 }

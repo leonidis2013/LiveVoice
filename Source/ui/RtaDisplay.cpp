@@ -436,6 +436,7 @@ void RtaDisplay::paint (juce::Graphics& g)
         g.reduceClipRegion (plot.toNearestInt());
 
         drawDeEss (g);
+        drawEqSolo (g);
 
         // spectra: input as a solid grey area, output as a blue area with a line
         const int nCols = (int) outCols.size();
@@ -551,6 +552,39 @@ void RtaDisplay::drawDeEss (juce::Graphics& g)
     g.drawText ("De-esser", juce::Rectangle<float> (0.5f * (x0 + x1) - 40.0f, plot.getBottom() - 18.0f, 80.0f, 14.0f), juce::Justification::centred);
 }
 
+// EQ band solo: shade the range the solo filter lets through, in the band's colour.
+void RtaDisplay::drawEqSolo (juce::Graphics& g)
+{
+    const int b = proc.soloTarget.load();
+    if (! juce::isPositiveAndBelow (b, numEqBands)) return;
+    const auto type = bandType (b);
+    if (isPassType (type)) return;
+
+    const float f = proc.apvts.getRawParameterValue (bFreq (b))->load();
+    float lo = minFreq, hi = maxFreq;
+    if (type == params::BandType::lowShelf)       hi = f;
+    else if (type == params::BandType::highShelf) lo = f;
+    else
+    {
+        const float q = std::max (0.7f, proc.apvts.getRawParameterValue (bQ (b))->load());
+        const float bwOct = 2.0f * std::asinh (1.0f / (2.0f * q)) / std::log (2.0f);
+        lo = f * std::pow (2.0f, -bwOct * 0.5f);
+        hi = f * std::pow (2.0f, bwOct * 0.5f);
+    }
+    const float x0 = xForFreq (juce::jlimit (minFreq, maxFreq, lo)), x1 = xForFreq (juce::jlimit (minFreq, maxFreq, hi));
+    const auto col = theme::bandColours[b];
+    const auto area = juce::Rectangle<float> (x0, plot.getY(), x1 - x0, plot.getHeight());
+    g.setColour (col.withAlpha (0.16f));
+    g.fillRect (area);
+    g.setColour (col.withAlpha (0.7f));
+    g.drawVerticalLine ((int) x0, plot.getY(), plot.getBottom());
+    g.drawVerticalLine ((int) x1, plot.getY(), plot.getBottom());
+    g.setFont (theme::font (10.5f, true));
+    g.setColour (col);
+    g.drawText ("SOLO " + juce::String (b + 1), juce::Rectangle<float> (0.5f * (x0 + x1) - 40.0f, plot.getBottom() - 18.0f, 80.0f, 14.0f),
+                juce::Justification::centred);
+}
+
 void RtaDisplay::drawNotchMarkers (juce::Graphics& g)
 {
     for (int i = 0; i < (int) notches.size(); ++i)
@@ -592,13 +626,6 @@ void RtaDisplay::drawHandles (juce::Graphics& g)
         const auto pos = handlePosition (b);
         const auto col = theme::bandColours[b];
         const float r = (b == selectedBand ? 9.0f : 7.5f) + (b == hoverBand ? 1.0f : 0.0f);
-
-        if (dyn && on && std::abs (dynGain[(size_t) b]) > 0.05f)
-        {
-            const float y2 = yForEqDb (proc.apvts.getRawParameterValue (bGain (b))->load() + dynGain[(size_t) b]);
-            g.setColour (col.withAlpha (0.7f));
-            g.drawLine (pos.x, pos.y, pos.x, y2, 3.0f);
-        }
 
         g.setColour (on ? col.withAlpha (0.25f) : theme::panel);
         g.fillEllipse (pos.x - r, pos.y - r, r * 2.0f, r * 2.0f);

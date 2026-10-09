@@ -4,6 +4,7 @@
 #include "ui/Theme.h"
 #include "ui/RtaDisplay.h"
 #include "ui/Panels.h"
+#include "ui/SettingsPanel.h"
 #if LIVEVOICE_USE_OPENGL
  #include <juce_opengl/juce_opengl.h>
 #endif
@@ -22,12 +23,14 @@ public:
     void resized() override;
     void refreshNow() { timerCallback(); }   // used by the snapshot tool
     void toggleThemeForTest() { toggleTheme(); }
+    void showSettingsForTest (bool show) { if (show) openSettings(); else settings.setVisible (false); }
 
 private:
     void timerCallback() override;
     void layoutCanvas();
     void toggleTheme();
-    void zoom (float step);             // +/- step; 0 = fit to the screen
+    void setScale (float s);            // 0 = fit to the screen
+    void openSettings();
     float fitScale() const;
     void setGpu (bool on);
 
@@ -63,6 +66,7 @@ private:
     EqPanel eqPanel { proc };
     DeEssPanel deEssPanel { proc };
     CompPanel compPanel { proc };
+    SettingsPanel settings { proc };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LiveVoiceEditor)
 };

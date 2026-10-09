@@ -10,7 +10,8 @@ target_sources(LiveVoiceTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Source/dsp/FeedbackSuppressor.cpp
     ${CMAKE_SOURCE_DIR}/Source/dsp/FeedbackDetector.cpp
     ${CMAKE_SOURCE_DIR}/Source/ui/RtaDisplay.cpp
-    ${CMAKE_SOURCE_DIR}/Source/ui/Panels.cpp)
+    ${CMAKE_SOURCE_DIR}/Source/ui/Panels.cpp
+    ${CMAKE_SOURCE_DIR}/Source/ui/SettingsPanel.cpp)
 
 target_include_directories(LiveVoiceTests PRIVATE ${CMAKE_SOURCE_DIR}/Source)
 

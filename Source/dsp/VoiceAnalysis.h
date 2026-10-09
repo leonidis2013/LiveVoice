@@ -11,9 +11,9 @@ namespace dsp::analysis
     {
         bool ok = false;
         int sibilantFrames = 0;
-        float freq = 6500.0f, q = 3.0f;
+        float freq = 6500.0f, q = 1.0f;
         float thresholdDb = -30.0f;      // absolute mode
-        float relThresholdDb = -18.0f;   // relative mode
+        float relThresholdDb = -6.0f;    // relative mode (sibilance band vs voice body)
     };
 
     struct EqSuggestion

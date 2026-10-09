@@ -14,8 +14,6 @@ namespace params
     // ---- global ----
     inline const juce::String inGain   { "inGain" };
     inline const juce::String outGain  { "outGain" };
-    inline const juce::String limitOn  { "limitOn" };
-    inline const juce::String ceiling  { "ceiling" };
     inline const juce::String bypass   { "bypass" };
 
     // ---- feedback ----
@@ -121,6 +119,7 @@ namespace params
     inline const juce::String compMakeup  { "compMakeup" };
     inline const juce::String compMix     { "compMix" };
     inline const juce::String compScHp    { "compScHp" };
+    inline const juce::String compAutoGain { "compAutoGain" };
 
     // -----------------------------------------------------------------------
     inline juce::NormalisableRange<float> freqRange (float lo, float hi)
@@ -182,8 +181,6 @@ namespace params
         // Global
         addF (inGain,  "Input Gain",  { -24.0f, 24.0f, 0.1f }, 0.0f, db);
         addF (outGain, "Output Gain", { -24.0f, 24.0f, 0.1f }, 0.0f, db);
-        addB (limitOn, "Safety Limiter", true);
-        addF (ceiling, "Limiter Ceiling", { -12.0f, 0.0f, 0.1f }, -1.0f, db);
         addB (bypass,  "Bypass", false);
 
         // Feedback
@@ -225,10 +222,10 @@ namespace params
         addF (dsThr,   "De-Ess Threshold", { -60.0f, 0.0f, 0.1f }, -30.0f, db);
         addF (dsRange, "De-Ess Range", { 0.0f, 24.0f, 0.1f }, 8.0f, db);
         addC (dsMode,  "De-Ess Mode", { "Band (narrow)", "Shelf (all highs)", "Wideband" }, 0);
-        addF (dsQ,     "De-Ess Width", timeRange (1.0f, 8.0f, 3.0f), 3.0f, qa);
+        addF (dsQ,     "De-Ess Width", timeRange (0.6f, 6.0f, 1.6f), 1.0f, qa);
         addF (dsRel,   "De-Ess Release", timeRange (20.0f, 500.0f, 80.0f), 80.0f, ms);
-        addB (dsRelative,  "De-Ess Relative Detection", false);
-        addF (dsRelThr, "De-Ess Relative Threshold", { -40.0f, 6.0f, 0.1f }, -18.0f, db);
+        addB (dsRelative,  "De-Ess Relative Detection", true);
+        addF (dsRelThr, "De-Ess Relative Threshold", { -30.0f, 20.0f, 0.1f }, -6.0f, db);
 
         // PSE
         addB (pseOn,      "PSE On", false);
@@ -251,6 +248,7 @@ namespace params
         addF (compMakeup,  "Comp Makeup", { 0.0f, 24.0f, 0.1f }, 0.0f, db);
         addF (compMix,     "Comp Mix", { 0.0f, 100.0f, 1.0f }, 100.0f, pct);
         addF (compScHp,    "Comp Sidechain HP", freqRange (20.0f, 300.0f), 100.0f, hz);
+        addB (compAutoGain, "Comp Auto Gain", false);
 
         return layout;
     }

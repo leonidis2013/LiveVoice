@@ -44,7 +44,7 @@ namespace
 
         void allModulesOff()
         {
-            set (fbOn, 0); set (eqOn, 0); set (dsOn, 0); set (limitOn, 0); set (pseOn, 0); set (compOn, 0);
+            set (fbOn, 0); set (eqOn, 0); set (dsOn, 0); set (pseOn, 0); set (compOn, 0);
         }
 
         // Runs `input(n)` through the plugin; returns the output.
@@ -188,7 +188,13 @@ namespace
             for (int i = 0; i < n; ++i) h.buf.setSample (0, i, v (start + i) + room.feedback (start + i));
             h.p.processBlock (h.buf, h.midi);
             h.p.detector.processPendingForTest();
-            for (int i = 0; i < n; ++i) { out[(size_t) (start + i)] = h.buf.getSample (0, i); room.store (start + i, h.buf.getSample (0, i)); }
+            for (int i = 0; i < n; ++i)
+            {
+                // the power amp clips at full scale (there is no limiter in the plugin), so a runaway stays finite
+                const float y = juce::jlimit (-1.0f, 1.0f, h.buf.getSample (0, i));
+                out[(size_t) (start + i)] = y;
+                room.store (start + i, y);
+            }
         }
         return out;
     }
@@ -218,7 +224,7 @@ static void testLatency()
     auto out = h.run ([] (int64_t n) { return n == 0 ? 1.0f : 0.0f; }, 0.05);
     check (std::abs (out[0] - 1.0f) < 1e-4f, "modules off: impulse passes at sample 0, unchanged");
 
-    Harness h2;   // defaults: HP filter, de-esser, limiter on + everything else switched on
+    Harness h2;   // defaults: HP filter, de-esser on + everything else switched on
     h2.set (fbOn, 1); h2.set (pseOn, 1); h2.set (pseThr, -80.0f); h2.set (compOn, 1); h2.set (dsRelative, 1);
     auto out2 = h2.run ([] (int64_t n) { return n == 0 ? 0.5f : 0.0f; }, 0.05);
     size_t peakIdx = 0;
@@ -498,6 +504,7 @@ static void testSuggest()
 
         // and the suggested settings actually de-ess this voice by a sensible amount
         Harness h; h.allModulesOff(); h.set (dsOn, 1); h.set (dsMode, 0.0f); h.set (dsFreq, s.freq); h.set (dsQ, s.q); h.set (dsThr, s.thresholdDb);
+        h.set (dsRelThr, s.relThresholdDb);
         float maxGr = 0.0f;
         for (size_t start = 0; start + blockSize <= x.size(); start += blockSize)
         {
@@ -601,15 +608,6 @@ static void testDeEsser()
     check (bandOctBelow > -1.0, "band mode is narrow: an octave below is barely touched");
     check (std::abs (band300) < 0.2, "band mode leaves the body of the voice alone");
     check (shelf12k < -5.0 && wide7k < -5.0, "shelf (all highs) and wideband modes reduce too");
-}
-
-static void testLimiter()
-{
-    std::cout << "\nSafety limiter" << std::endl;
-    Harness h; h.allModulesOff(); h.set (limitOn, 1); h.set (ceiling, -1.0f);
-    auto out = h.run ([] (int64_t n) { return 2.0f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 440.0 * (double) n / fs); }, 0.5);
-    std::cout << "  +6 dBFS input -> output peak " << juce::String (peakDb (out), 2) << " dBFS" << std::endl;
-    check (peakDb (out) <= -0.99, "output never exceeds the ceiling");
 }
 
 static void testPresets()
@@ -752,19 +750,19 @@ static void testCompressor()
 static void testRelativeDeEss()
 {
     std::cout << "\nDe-esser relative detection" << std::endl;
-    // a "voice" = 300 Hz body + 7 kHz sibilance 3 dB lower, at a soft and a loud level
+    // an "s" on top of a voice = 300 Hz body + 7 kHz sibilance 3 dB louder, at a soft and a loud level
     auto run = [] (bool relative, float levelDb)
     {
         Harness h; h.allModulesOff(); h.set (dsOn, 1); h.set (dsRelative, relative ? 1.0f : 0.0f);
         h.set (dsThr, -30.0f); h.set (dsRange, 8.0f); h.set (dsFreq, 7000.0f);   // default relative threshold
-        const float a = dsp::dbToGain (levelDb), b = dsp::dbToGain (levelDb - 3.0f);
+        const float a = dsp::dbToGain (levelDb), b = dsp::dbToGain (levelDb + 3.0f);
         auto out = h.run ([a, b] (int64_t n)
         {
             const double t = (double) n / fs;
             return a * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 300.0 * t)
                  + b * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 7000.0 * t);
         }, 1.0);
-        return toneDb (out, out.size() - 9600, out.size(), 7000.0) - (levelDb - 3.0f);
+        return toneDb (out, out.size() - 9600, out.size(), 7000.0) - (levelDb + 3.0f);
     };
     const double absSoft = run (false, -45.0f), absLoud = run (false, -12.0f);
     const double relSoft = run (true, -45.0f), relLoud = run (true, -12.0f);
@@ -807,6 +805,154 @@ static void testPerformance()
     check (ms < 2000.0, "well under real time");
 }
 
+// Realistic-ish sibilance material: a voiced vowel (120 Hz, formants) plus broadband "s" bursts
+// (noise band-limited 4-10 kHz, peaking ~6.5 kHz), roughly as loud as the vowel - a harsh talker.
+struct SibilantTalker
+{
+    std::mt19937 rng { 3 };
+    std::normal_distribution<float> nz { 0.0f, 1.0f };
+    dsp::SvfCoeffs hp, lp, pk; dsp::SvfState s1, s2, s3;
+    double phase = 0.0;
+    float level;
+    explicit SibilantTalker (float levelDb) : level (dsp::dbToGain (levelDb))
+    {
+        hp.highPass (4000.0, 0.707, fs); lp.lowPass (10000.0, 0.707, fs); pk.bell (6500.0, 1.2, 6.0, fs);
+    }
+    static bool isS (double t) { const double c = std::fmod (t, 0.8); return c > 0.55 && c < 0.70; }      // 150 ms "s" every 0.8 s
+    static bool isVowel (double t) { const double c = std::fmod (t, 0.8); return c > 0.05 && c < 0.50; }
+    float operator() (int64_t n)
+    {
+        const double t = (double) n / fs;
+        float out = 0.0f;
+        if (isVowel (t) || (std::fmod (t, 0.8) > 0.02 && std::fmod (t, 0.8) < 0.53))
+        {
+            phase += 120.0 / fs;
+            double v = 0.0;
+            for (int h = 1; h <= 60; ++h)
+            {
+                const double fh = 120.0 * h;
+                if (fh > 9000.0) break;
+                const double formant = 1.0 + 2.0 * std::exp (-std::pow ((fh - 650.0) / 250.0, 2.0)) + 1.2 * std::exp (-std::pow ((fh - 2600.0) / 600.0, 2.0));
+                v += formant / h * std::sin (2.0 * juce::MathConstants<double>::pi * h * phase);
+            }
+            out += (float) (0.22 * v);
+        }
+        const float noise = s3.process (s2.process (s1.process (nz (rng), hp), lp), pk);
+        if (isS (t)) out += 0.35f * noise;
+        return out * level;
+    }
+};
+
+static double bandEnergyDb (const std::vector<float>& x, double lo, double hi, const std::function<bool (double)>& when)
+{
+    dsp::SvfCoeffs a, b; a.highPass (lo, 0.707, fs); b.lowPass (hi, 0.707, fs);
+    dsp::SvfState sa, sb, sc, sd;
+    double e = 0.0; int64_t n = 0;
+    for (size_t i = 0; i < x.size(); ++i)
+    {
+        const float y = sd.process (sc.process (sb.process (sa.process (x[i], a), a), b), b);
+        if (i > (size_t) fs && when ((double) i / fs)) { e += (double) y * y; ++n; }
+    }
+    return 10.0 * std::log10 (e / std::max<int64_t> (1, n) + 1e-20);
+}
+
+struct DeEssResult { double sRed, vBody, vTop; };
+
+static DeEssResult deEssReport (const char* name, const std::function<void (Harness&)> setup)
+{
+    auto render = [&] (bool on)
+    {
+        Harness h; h.allModulesOff(); h.set (dsOn, on ? 1.0f : 0.0f); setup (h);
+        SibilantTalker v (-12.0f);
+        return h.run ([&v] (int64_t n) { return v (n); }, 8.0);
+    };
+    const auto dry = render (false), wet = render (true);
+    const double sRed = bandEnergyDb (wet, 4000, 10000, SibilantTalker::isS) - bandEnergyDb (dry, 4000, 10000, SibilantTalker::isS);
+    const double vBody = bandEnergyDb (wet, 200, 3000, SibilantTalker::isVowel) - bandEnergyDb (dry, 200, 3000, SibilantTalker::isVowel);
+    const double vTop = bandEnergyDb (wet, 3000, 9000, SibilantTalker::isVowel) - bandEnergyDb (dry, 3000, 9000, SibilantTalker::isVowel);
+    std::cout << "  " << juce::String (name).paddedRight (' ', 44) << "s (4-10k): " << juce::String (sRed, 1).paddedLeft (' ', 6)
+              << " dB   vowel body: " << juce::String (vBody, 2).paddedLeft (' ', 6) << " dB   vowel presence: " << juce::String (vTop, 2).paddedLeft (' ', 6) << " dB" << std::endl;
+    return { sRed, vBody, vTop };
+}
+
+static int deEssProbe()
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    std::cout << "De-esser on a harsh synthetic talker (s energy 4-10 kHz reduced; vowels should be untouched)" << std::endl;
+    for (float thr : { -12.0f, -6.0f, 0.0f, 6.0f })
+        deEssReport (("new defaults, rel thr " + juce::String (thr, 0)).toRawUTF8(), [thr] (Harness& h) { h.set (dsRelThr, thr); });
+    deEssReport ("Q 2.5", [] (Harness& h) { h.set (dsQ, 2.5f); });
+    deEssReport ("Q 1.4", [] (Harness& h) { h.set (dsQ, 1.4f); });
+    deEssReport ("Q 0.7", [] (Harness& h) { h.set (dsQ, 0.7f); });
+    deEssReport ("shelf", [] (Harness& h) { h.set (dsMode, 1.0f); });
+    deEssReport ("wideband", [] (Harness& h) { h.set (dsMode, 2.0f); });
+    deEssReport ("absolute, thr -30", [] (Harness& h) { h.set (dsRelative, 0); });
+    deEssReport ("range 10", [] (Harness& h) { h.set (dsRange, 10.0f); });
+    {
+        SibilantTalker t (-12.0f);
+        std::vector<float> x ((size_t) fs * 20);
+        for (size_t i = 0; i < x.size(); ++i) x[i] = t ((int64_t) i);
+        const auto sg = dsp::analysis::suggestDeEss (x.data(), (int) x.size(), fs);
+        std::cout << "  Suggest on this talker: " << juce::String (sg.freq, 0) << " Hz, Q " << juce::String (sg.q, 2)
+                  << ", rel thr " << juce::String (sg.relThresholdDb, 0) << " dB" << std::endl;
+        deEssReport ("with the suggestion", [sg] (Harness& h) { h.set (dsFreq, sg.freq); h.set (dsQ, sg.q); h.set (dsRelThr, sg.relThresholdDb); });
+    }
+    return 0;
+}
+
+static double rmsDb (const std::vector<float>& x, double fromSec, double toSec)
+{
+    double e = 0.0; int64_t n = 0;
+    for (size_t i = (size_t) (fromSec * fs); i < std::min (x.size(), (size_t) (toSec * fs)); ++i) { e += (double) x[i] * x[i]; ++n; }
+    return 10.0 * std::log10 (e / std::max<int64_t> (1, n) + 1e-20);
+}
+
+static void testDeEssQualityAndLevels()
+{
+    std::cout << "\nDe-esser on a harsh talker, compressor auto gain, output level match" << std::endl;
+    {
+        const auto r = deEssReport ("default settings", [] (Harness&) {});
+        check (r.sRed < -4.0, "de-esser takes the s sounds down by more than 4 dB at default settings");
+        check (std::abs (r.vBody) < 0.5 && r.vTop > -1.5, "vowels are left alone (body and presence)");
+
+        SibilantTalker t (-12.0f);
+        std::vector<float> x ((size_t) fs * 20);
+        for (size_t i = 0; i < x.size(); ++i) x[i] = t ((int64_t) i);
+        const auto sg = dsp::analysis::suggestDeEss (x.data(), (int) x.size(), fs);
+        const auto rs = deEssReport ("with Suggest", [sg] (Harness& h) { h.set (dsFreq, sg.freq); h.set (dsQ, sg.q); h.set (dsRelThr, sg.relThresholdDb); });
+        check (sg.ok && rs.sRed < -4.0 && std::abs (rs.vBody) < 0.5, "Suggest on this talker de-esses well without touching vowels");
+    }
+
+    auto compRun = [] (bool autoGain)
+    {
+        Harness h; h.allModulesOff(); h.set (compOn, 1); h.set (compThr, -30.0f); h.set (compRatio, 4.0f);
+        h.set (compMakeup, 0.0f); h.set (compAutoGain, autoGain ? 1.0f : 0.0f);
+        Voice v (120.0, false, -12.0f);
+        std::vector<float> in;
+        auto out = h.run ([&v, &in] (int64_t n) { const float s = v (n); in.push_back (s); return s; }, 10.0);
+        return rmsDb (out, 6.0, 10.0) - rmsDb (in, 6.0, 10.0);
+    };
+    const double plain = compRun (false), withAuto = compRun (true);
+    std::cout << "  compressor thr -30, 4:1 on a voice: level change " << juce::String (plain, 1) << " dB, with auto gain "
+              << juce::String (withAuto, 1) << " dB" << std::endl;
+    check (plain < -3.0 && std::abs (withAuto) < 1.5, "auto gain keeps the compressed voice as loud as the input");
+
+    {
+        Harness h; h.allModulesOff(); h.set (eqOn, 1); h.set (bOn (2), 1); h.set (bGain (2), 6.0f); h.set (bDyn (2), 0);
+        h.set (bFreq (2), 600.0f); h.set (bQ (2), 0.7f);
+        Voice v (120.0, false, -18.0f);
+        h.run ([&v] (int64_t n) { return v (n); }, 5.0);
+        const float before = h.p.getOutputVsInputDb();
+        const bool valid = h.p.levelMatchValid();
+        h.p.matchOutputToInput();
+        h.run ([&v] (int64_t n) { return v (n); }, 5.0);
+        const float after = h.p.getOutputVsInputDb();
+        std::cout << "  +6 dB EQ boost: output vs input " << juce::String (before, 1) << " dB; after MATCH " << juce::String (after, 1)
+                  << " dB (OUTPUT " << juce::String (h.p.apvts.getRawParameterValue (outGain)->load(), 1) << " dB)" << std::endl;
+        check (valid && before > 1.0f && std::abs (after) < 1.0f, "level indicator sees the boost and MATCH levels the output");
+    }
+}
+
 static int profile()
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -836,7 +982,6 @@ static int profile()
         for (int b = 0; b < 6; ++b) { h.set (bOn (b), 1); h.set (bDyn (b), b > 0 ? 1.0f : 0.0f); } });
     timeIt ("de-esser (relative)", [] (Harness& h) { h.allModulesOff(); h.set (dsOn, 1); h.set (dsRelative, 1); });
     timeIt ("compressor", [] (Harness& h) { h.allModulesOff(); h.set (compOn, 1); });
-    timeIt ("limiter", [] (Harness& h) { h.allModulesOff(); h.set (limitOn, 1); });
     timeIt ("EVERYTHING ON", [] (Harness& h) { h.set (fbOn, 1); h.set (eqOn, 1); h.set (pseOn, 1); h.set (compOn, 1); h.set (dsRelative, 1);
         for (int b = 0; b < 6; ++b) { h.set (bOn (b), 1); h.set (bDyn (b), b > 0 ? 1.0f : 0.0f); } });
 
@@ -911,7 +1056,11 @@ static int snapshot (const juce::String& path, bool light, bool toggle)
     std::unique_ptr<LiveVoiceEditor> ed (dynamic_cast<LiveVoiceEditor*> (h.p.createEditor()));
     ed->setSize (LiveVoiceEditor::designWidth, LiveVoiceEditor::designHeight);
     if (toggle) ed->toggleThemeForTest();   // exercise the live switch, not just startup
-    if (juce::String (path).contains ("solo")) h.p.soloTarget = LiveVoiceProcessor::soloDeEss;
+    const juce::String name = juce::File (path).getFileName();
+    if (name.contains ("eqsolo"))     h.p.soloTarget = 2;
+    else if (name.contains ("solo"))  h.p.soloTarget = LiveVoiceProcessor::soloDeEss;
+    if (name.contains ("off"))        { h.set (dsOn, 0); h.set (compOn, 0); }
+    if (name.contains ("settings"))   ed->showSettingsForTest (true);
     // keep audio running so the RTA and histogram fill in
     int64_t pos = (int64_t) (6.0 * fs);
     for (int frame = 0; frame < 120; ++frame)
@@ -922,7 +1071,7 @@ static int snapshot (const juce::String& path, bool light, bool toggle)
             for (int i = 0; i < blockSize; ++i) h.buf.setSample (0, i, v (pos + i) + room.feedback (pos + i));
             h.p.processBlock (h.buf, h.midi);
             h.p.detector.processPendingForTest();
-            for (int i = 0; i < blockSize; ++i) room.store (pos + i, h.buf.getSample (0, i));
+            for (int i = 0; i < blockSize; ++i) room.store (pos + i, juce::jlimit (-1.0f, 1.0f, h.buf.getSample (0, i)));
             pos += blockSize;
         }
         ed->refreshNow();
@@ -942,6 +1091,7 @@ static int snapshot (const juce::String& path, bool light, bool toggle)
 int main (int argc, char** argv)
 {
     if (argc >= 2 && juce::String (argv[1]) == "--profile") return profile();
+    if (argc >= 2 && juce::String (argv[1]) == "--deess-probe") return deEssProbe();
     if (argc >= 3 && juce::String (argv[1]) == "--snapshot")
         return snapshot (argv[2], argc >= 4 && juce::String (argv[3]) == "light", argc >= 4 && juce::String (argv[3]) == "toggle");
 
@@ -953,11 +1103,11 @@ int main (int argc, char** argv)
     testSuggest();
     testUndoAndAB();
     testDeEsser();
-    testLimiter();
     testPresets();
     testPse();
     testCompressor();
     testRelativeDeEss();
+    testDeEssQualityAndLevels();
     testClosedLoop();
     testFalsePositives();
     testLearnAndState();

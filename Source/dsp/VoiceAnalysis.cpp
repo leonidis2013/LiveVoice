@@ -107,19 +107,21 @@ namespace dsp::analysis
         while (kL > 1 && sm[(size_t) kL] > pk - 6.0f) --kL;
         while (kR < (int) sm.size() - 1 && sm[(size_t) kR] > pk - 6.0f) ++kR;
         out.freq = (float) (kPeak * binHz);
-        out.q = juce::jlimit (1.5f, 6.0f, (float) (out.freq / std::max (binHz, (kR - kL) * binHz)));
+        out.q = juce::jlimit (0.7f, 3.0f, (float) (out.freq / std::max (binHz, (kR - kL) * binHz)));
 
-        // threshold: run the de-esser's own detectors and look at how loud the sibilants measure
-        SvfCoeffs band, full;
+        // threshold: run the de-esser's own detectors (sibilance band vs the voice body,
+        // 200 Hz - 3 kHz) and look at how the sibilants measure
+        SvfCoeffs band, bodyHp, bodyLp;
         band.bandPass (out.freq, out.q, fs);
-        full.highPass (80.0, 0.707, fs);
-        SvfState sb, sf;
-        const float att = timeCoeff (0.5f, fs), rel = timeCoeff (80.0f, fs);
+        bodyHp.highPass (200.0, 0.707, fs);
+        bodyLp.lowPass (3000.0, 0.707, fs);
+        SvfState sb, sh, sl;
+        const float att = timeCoeff (0.5f, fs), rel = timeCoeff (20.0f, fs);
         float envB = 0.0f, envF = 0.0f;
         std::vector<float> absDb ((size_t) n), relDb ((size_t) n);
         for (int i = 0; i < n; ++i)
         {
-            const float b = sb.process (x[i], band), f = sf.process (x[i], full);
+            const float b = sb.process (x[i], band), f = sl.process (sh.process (x[i], bodyHp), bodyLp);
             envB = (b * b > envB ? att : rel) * envB + (1.0f - (b * b > envB ? att : rel)) * b * b;
             envF = (f * f > envF ? att : rel) * envF + (1.0f - (f * f > envF ? att : rel)) * f * f;
             const float bDb = 10.0f * std::log10 (envB + 1.0e-12f) + 3.0103f;
@@ -127,16 +129,17 @@ namespace dsp::analysis
             absDb[(size_t) i] = bDb;
             relDb[(size_t) i] = bDb - fDb;
         }
-        std::vector<float> absPeaks, relPeaks;
+        // typical level of each sibilant frame (mean in dB, not its peak)
+        std::vector<float> absTyp, relTyp;
         for (int start : sibStarts)
         {
-            float a = -200.0f, r = -200.0f;
-            for (int i = start; i < std::min (n, start + size); ++i) { a = std::max (a, absDb[(size_t) i]); r = std::max (r, relDb[(size_t) i]); }
-            absPeaks.push_back (a); relPeaks.push_back (r);
+            double a = 0.0, r = 0.0; int c = 0;
+            for (int i = start; i < std::min (n, start + size); ++i) { a += absDb[(size_t) i]; r += relDb[(size_t) i]; ++c; }
+            absTyp.push_back ((float) (a / std::max (1, c))); relTyp.push_back ((float) (r / std::max (1, c)));
         }
-        // typical "s" gets ~3 dB of reduction, louder ones more (up to the Range)
-        out.thresholdDb    = juce::jlimit (-60.0f, 0.0f, percentile (absPeaks, 50.0f) - 4.0f);
-        out.relThresholdDb = juce::jlimit (-40.0f, 6.0f, percentile (relPeaks, 50.0f) - 4.0f);
+        // sibilants flutter (they are noise), so aim well below the softer ones: nearly every "s" gets most of Range
+        out.thresholdDb    = juce::jlimit (-60.0f, 0.0f, std::round (percentile (absTyp, 25.0f) - 14.0f));
+        out.relThresholdDb = juce::jlimit (-30.0f, 20.0f, std::round (percentile (relTyp, 25.0f) - 14.0f));
         out.ok = true;
         return out;
     }

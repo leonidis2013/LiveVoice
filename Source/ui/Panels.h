@@ -188,6 +188,25 @@ private:
     float level = -100.0f, gain = 0.0f, paintedLevel = 1000.0f, paintedGain = 1000.0f;
 };
 
+// Result of a Suggest: what was set, with KEEP and REVERT right next to it.
+// REVERT puts back exactly the values that were there before the suggestion.
+class SuggestionBar : public juce::Component
+{
+public:
+    SuggestionBar (LiveVoiceProcessor& p, const juce::Colour& accent);
+    void show (const juce::String& text, std::vector<std::pair<juce::String, float>> before);
+    void showMessage (const juce::String& text);   // e.g. "not enough voice heard"
+    void clear();
+    void resized() override;
+    void paint (juce::Graphics&) override;
+private:
+    LiveVoiceProcessor& proc;
+    const juce::Colour& accent;
+    juce::String message;
+    std::vector<std::pair<juce::String, float>> previous;
+    juce::TextButton keep { "KEEP" }, revert { "REVERT" };
+};
+
 // ---------------------------------------------------------------- panels
 class FeedbackPanel : public ModulePanel
 {
@@ -198,14 +217,12 @@ public:
 
 private:
     LiveVoiceProcessor& proc;
-    Combo mode, width;
+    Combo mode;
     ToggleBtn learn { "RING-OUT LEARN", theme::feedback }, freeze { "FREEZE", theme::warn };
     juce::TextButton clearFloat { "CLEAR FLOATING" }, clearAll { "CLEAR ALL" }, logBtn { "LOG" };
     void showLog();
-    Knob sens { "Sensitivity", theme::feedback }, depth { "Max Depth", theme::feedback }, hold { "Float Hold", theme::feedback },
-         maxFixed { "Fixed Max", theme::feedback }, maxFloat { "Floating Max", theme::feedback },
-         lo { "Low Limit", theme::feedback }, hi { "High Limit", theme::feedback };
-    juce::Label modeLabel, widthLabel, status;
+    Knob sens { "Sensitivity", theme::feedback }, depth { "Max Depth", theme::feedback }, hold { "Float Hold", theme::feedback };
+    juce::Label modeLabel, status;
 };
 
 class EqPanel : public ModulePanel
@@ -228,7 +245,7 @@ private:
          attack { "Attack", theme::eq }, release { "Release", theme::eq };
     DynActivity activity { proc };
     juce::TextButton suggest { "SUGGEST" };
-    juce::Label statusLbl;
+    SuggestionBar suggestion { proc, theme::eq };
     void runSuggestion();
 };
 
@@ -247,7 +264,8 @@ private:
     Knob freq { "Freq", theme::deess }, width { "Width (Q)", theme::deess }, thr { "Threshold", theme::deess },
          range { "Range", theme::deess }, rel { "Release", theme::deess };
     GainReductionMeter grMeter { theme::deess, 24.0f };
-    juce::Label grLabel, grValue, status;
+    juce::Label grLabel, grValue;
+    SuggestionBar suggestion { proc, theme::deess };
     juce::TextButton suggest { "SUGGEST" };
     int boundRelative = -1;
     void runSuggestion();
@@ -263,8 +281,7 @@ private:
     LiveVoiceProcessor& proc;
     PseKeyMeter keyMeter { proc };
     Knob thr { "Threshold", theme::pse }, range { "Range", theme::pse }, attack { "Attack", theme::pse },
-         hold { "Hold", theme::pse }, release { "Release", theme::pse },
-         scHp { "Key HP", theme::pse }, scLp { "Key LP", theme::pse };
+         hold { "Hold", theme::pse }, release { "Release", theme::pse };
 };
 
 class CompPanel : public ModulePanel
@@ -275,11 +292,26 @@ public:
     void update();
 private:
     LiveVoiceProcessor& proc;
-    ToggleBtn autoRel { "AUTO RELEASE", theme::comp };
+    ToggleBtn autoRel { "AUTO RELEASE", theme::comp }, autoGain { "AUTO GAIN", theme::comp };
     Knob thr { "Threshold", theme::comp }, ratio { "Ratio", theme::comp }, knee { "Knee", theme::comp },
          attack { "Attack", theme::comp }, release { "Release", theme::comp }, makeup { "Makeup", theme::comp },
-         mix { "Mix", theme::comp }, scHp { "Key HP", theme::comp };
+         mix { "Mix", theme::comp };
     CompLevelMeter levelMeter { proc };
+};
+
+// Shows whether the output is as loud as the input (both measured while someone talks).
+// Click it to set OUTPUT so they match.
+class LevelMatch : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    explicit LevelMatch (LiveVoiceProcessor& p);
+    void update();
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+private:
+    LiveVoiceProcessor& proc;
+    float shown = 1000.0f;
+    bool valid = false;
 };
 
 class HeaderBar : public juce::Component
@@ -290,10 +322,7 @@ public:
     void paint (juce::Graphics&) override;
     void update();
     void refreshPresetList();
-    std::function<void()> onThemeToggle;
-    std::function<void (float)> onZoom;      // +/- step, or 0 = fit to screen
-    std::function<void()> onGpuToggle;
-    std::function<bool()> isGpuOn;
+    std::function<void()> onOpenSettings;
 
 private:
     void presetChosen();
@@ -304,12 +333,12 @@ private:
     juce::ComboBox presetBox;
     juce::TextButton saveBtn { "SAVE" }, deleteBtn { "DELETE" };
     juce::TextButton undoBtn { "UNDO" }, redoBtn { "REDO" }, slotA { "A" }, slotB { "B" }, copyBtn { "A>B" };
-    juce::TextButton zoomOut { "-" }, zoomFit { "FIT" }, zoomIn { "+" }, settingsBtn { "..." }, monitorBtn { "MON A/B" };
-    void showSettingsMenu();
-    Knob inGain { "INPUT", theme::output }, outGain { "OUTPUT", theme::output }, ceiling { "CEILING", theme::danger };
-    ToggleBtn limit { "LIMIT", theme::danger }, bypass { "BYPASS", theme::warn }, lightBtn { "LIGHT", theme::text };
-    GainReductionMeter limMeter { theme::danger, 12.0f };
+    juce::TextButton settingsBtn { "SETTINGS" }, monitorBtn { "MON A/B" };
+    Knob inGain { "INPUT", theme::output }, outGain { "OUTPUT", theme::output };
+    LevelMatch levelMatch { proc };
+    ToggleBtn bypass { "BYPASS", theme::warn };
     juce::StringArray userNames;
     std::unique_ptr<juce::AlertWindow> dialog;
     bool updatingList = false;
 };
+

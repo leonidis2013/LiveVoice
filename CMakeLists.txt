@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(LiveVoice VERSION 0.4.2 LANGUAGES C CXX)
+project(LiveVoice VERSION 0.5.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,7 +50,8 @@ set(LIVEVOICE_SOURCES
     Source/dsp/FeedbackSuppressor.cpp
     Source/dsp/FeedbackDetector.cpp
     Source/ui/RtaDisplay.cpp
-    Source/ui/Panels.cpp)
+    Source/ui/Panels.cpp
+    Source/ui/SettingsPanel.cpp)
 
 target_sources(LiveVoice PRIVATE ${LIVEVOICE_SOURCES})
 target_include_directories(LiveVoice PRIVATE Source)

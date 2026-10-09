@@ -5,7 +5,6 @@
 #include "PresetManager.h"
 #include "dsp/DynamicEq.h"
 #include "dsp/DeEsser.h"
-#include "dsp/SafetyLimiter.h"
 #include "dsp/FeedbackSuppressor.h"
 #include "dsp/FeedbackDetector.h"
 #include "dsp/PrimarySourceExpander.h"
@@ -76,7 +75,6 @@ public:
     dsp::FeedbackDetector detector { feedback };
     dsp::DynamicEq dynEq;
     dsp::DeEsser deEsser;
-    dsp::SafetyLimiter limiter;
     dsp::PrimarySourceExpander pse;
     dsp::VocalCompressor comp;
 
@@ -87,6 +85,14 @@ public:
     // Monitor output (output channel 2 when the input is mono): carries FOH, the dry input (A/B), or the solo.
     // soloToMain: fallback for hosts without monitor routing - solo replaces the main output.
     std::atomic<bool> monitorDry { false }, soloToMain { false };
+    std::atomic<int> deEssListen { 0 };   // de-ess solo plays: 0 = sibilance band, 1 = what's removed
+
+    // Level match: short-term loudness of the plugin's input (before INPUT trim) and output,
+    // only measured while someone is talking. outputVsInputDb = output - input.
+    std::atomic<float> loudIn { -100.0f }, loudOut { -100.0f };
+    float getOutputVsInputDb() const noexcept { return loudOut.load() - loudIn.load(); }
+    bool levelMatchValid() const noexcept { return loudIn.load() > -70.0f && loudOut.load() > -70.0f; }
+    void matchOutputToInput();   // message thread: sets OUTPUT so output loudness == input
     bool isMonitorBusActive() const;
 
     // ---- Suggest (voice capture for the de-esser / EQ assistants), message thread ----
@@ -128,7 +134,7 @@ private:
 
     struct P
     {
-        std::atomic<float>* inGain; std::atomic<float>* outGain; std::atomic<float>* limitOn; std::atomic<float>* ceiling; std::atomic<float>* bypass;
+        std::atomic<float>* inGain; std::atomic<float>* outGain; std::atomic<float>* bypass;
         std::atomic<float>* fbOn; std::atomic<float>* fbMode; std::atomic<float>* fbSens; std::atomic<float>* fbLearn; std::atomic<float>* fbFreeze;
         std::atomic<float>* fbMaxFixed; std::atomic<float>* fbMaxFloat; std::atomic<float>* fbMaxDepth; std::atomic<float>* fbWidth; std::atomic<float>* fbHold;
         std::atomic<float>* fbLo; std::atomic<float>* fbHi;
@@ -143,13 +149,15 @@ private:
         std::atomic<float>* pseHold; std::atomic<float>* pseRelease; std::atomic<float>* pseScHp; std::atomic<float>* pseScLp;
         std::atomic<float>* compOn; std::atomic<float>* compThr; std::atomic<float>* compRatio; std::atomic<float>* compKnee;
         std::atomic<float>* compAttack; std::atomic<float>* compRelease; std::atomic<float>* compAuto; std::atomic<float>* compMakeup;
-        std::atomic<float>* compMix; std::atomic<float>* compScHp;
+        std::atomic<float>* compMix; std::atomic<float>* compScHp; std::atomic<float>* compAutoGain;
     } p {};
 
     dsp::SvfCoeffs soloCoeffs;
     std::array<dsp::SvfState, 2> soloState;
     int lastSoloBand = -1;
     juce::AudioBuffer<float> dryBuf, soloBuf;
+    double powIn = 0.0, powOut = 0.0;   // gated short-term power for level match
+    std::atomic<float> levelAdjustDb { 0.0f };
 
     // capture
     std::vector<float> captureData;

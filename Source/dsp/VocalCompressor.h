@@ -16,6 +16,9 @@
 //  - optional program-dependent ("auto") release, opto-style: quick recovery
 //    after short peaks, slower and gentler after sustained compression
 //  - mix control for parallel compression
+//  - optional auto gain: makeup follows the average gain reduction (over ~2 s, only
+//    while the voice is present) so the output stays as loud as the input;
+//    the Makeup knob then trims on top of it
 namespace dsp
 {
     class VocalCompressor
@@ -23,7 +26,7 @@ namespace dsp
     public:
         struct Settings
         {
-            bool on = false, autoRelease = true;
+            bool on = false, autoRelease = true, autoGain = false;
             float thresholdDb = -20.0f, ratio = 3.0f, kneeDb = 10.0f, attackMs = 8.0f, releaseMs = 250.0f;
             float makeupDb = 0.0f, mix = 1.0f, scHpHz = 100.0f;
         };
@@ -41,7 +44,8 @@ namespace dsp
         {
             sc.reset();
             envPow = 0.0f; grSmooth = 0.0f; grSlow = 0.0f;
-            makeupSmoothed = 0.0f;
+            makeupSmoothed = 0.0f; avgLossDb = 0.0f;
+            appliedMakeup.store (0.0f);
             currentGr.store (0.0f);
             inputLevel.store (-100.0f);
         }
@@ -86,6 +90,7 @@ namespace dsp
                 }
                 currentGr.store (0.0f, std::memory_order_relaxed);
                 inputLevel.store (maxX, std::memory_order_relaxed);
+                appliedMakeup.store (0.0f, std::memory_order_relaxed);
                 grSmooth = grSlow = 0.0f;
                 return;
             }
@@ -96,6 +101,7 @@ namespace dsp
             const float aRslow = timeCoeff (std::min (3000.0f, settings.releaseMs * 3.0f), fs);
             const float aSlowTrack = timeCoeff (800.0f, fs);
             const float aMakeup = timeCoeff (20.0f, fs);
+            const float aAuto = timeCoeff (2000.0f, fs);
             const float mix = juce::jlimit (0.0f, 1.0f, settings.mix);
             float maxGr = 0.0f, maxX = -100.0f;
 
@@ -122,7 +128,14 @@ namespace dsp
                 maxX = std::max (maxX, xDb);
                 history.add (xDb, grSmooth);
 
-                makeupSmoothed = aMakeup * makeupSmoothed + (1.0f - aMakeup) * settings.makeupDb;
+                if (settings.autoGain && xDb > settings.thresholdDb - 24.0f)
+                {
+                    // gain lost to compression right now (accounting for the parallel mix)
+                    const float lossDb = -gainToDb (mix * dbToGain (-grSmooth) + (1.0f - mix));
+                    avgLossDb = aAuto * avgLossDb + (1.0f - aAuto) * lossDb;
+                }
+                const float makeupTarget = settings.makeupDb + (settings.autoGain ? avgLossDb : 0.0f);
+                makeupSmoothed = aMakeup * makeupSmoothed + (1.0f - aMakeup) * makeupTarget;
                 const float g = dbToGain (makeupSmoothed - grSmooth);
                 const float gl = mix * g + (1.0f - mix) * dbToGain (makeupSmoothed);   // parallel blend, makeup on both
 
@@ -132,8 +145,10 @@ namespace dsp
 
             currentGr.store (maxGr, std::memory_order_relaxed);
             inputLevel.store (maxX, std::memory_order_relaxed);
+            appliedMakeup.store (makeupSmoothed, std::memory_order_relaxed);
         }
 
+        float getMakeupDb() const noexcept        { return appliedMakeup.load (std::memory_order_relaxed); }   // incl. auto gain
         float getGainReductionDb() const noexcept { return currentGr.load (std::memory_order_relaxed); }
         float getInputLevelDb() const noexcept    { return inputLevel.load (std::memory_order_relaxed); }
         void readHistory (LevelHistory::Point* dest, int count) const noexcept { history.read (dest, count); }
@@ -145,7 +160,8 @@ namespace dsp
         SvfCoeffs scCoeffs;
         SvfState sc;
         float lastHp = -1.0f;
-        float envPow = 0.0f, grSmooth = 0.0f, grSlow = 0.0f, makeupSmoothed = 0.0f;
+        float envPow = 0.0f, grSmooth = 0.0f, grSlow = 0.0f, makeupSmoothed = 0.0f, avgLossDb = 0.0f;
+        std::atomic<float> appliedMakeup { 0.0f };
         std::atomic<float> currentGr { 0.0f }, inputLevel { -100.0f };
         LevelHistory history;
     };
