@@ -10,6 +10,7 @@
 #include "dsp/PrimarySourceExpander.h"
 #include "dsp/VocalCompressor.h"
 #include "dsp/LevelTone.h"
+#include "dsp/HighPass.h"
 
 // Lock-free ring the audio thread writes and the UI reads for the RTA.
 class ScopeTap
@@ -72,6 +73,7 @@ public:
     PresetManager presets;
     ScopeTap inputTap, outputTap;
 
+    dsp::HighPass highPass;
     dsp::FeedbackSuppressor feedback;
     dsp::FeedbackDetector detector { feedback };
     dsp::DynamicEq dynEq;
@@ -142,6 +144,7 @@ private:
         std::atomic<float>* fbOn; std::atomic<float>* fbMode; std::atomic<float>* fbSens; std::atomic<float>* fbLearn; std::atomic<float>* fbFreeze;
         std::atomic<float>* fbMaxFixed; std::atomic<float>* fbMaxFloat; std::atomic<float>* fbMaxDepth; std::atomic<float>* fbWidth; std::atomic<float>* fbHold;
         std::atomic<float>* fbLo; std::atomic<float>* fbHi;
+        std::atomic<float>* hpfOn; std::atomic<float>* hpfFreq; std::atomic<float>* hpfSlope;
         std::atomic<float>* eqOn;
         struct Band { std::atomic<float>* on; std::atomic<float>* type; std::atomic<float>* freq; std::atomic<float>* gain; std::atomic<float>* q;
                       std::atomic<float>* dyn; std::atomic<float>* thr; std::atomic<float>* range; std::atomic<float>* ratio;
@@ -162,6 +165,7 @@ private:
     std::array<dsp::SvfState, 2> soloState;
     int lastSoloBand = -1;
     juce::AudioBuffer<float> dryBuf, soloBuf;
+    int lastDetectCount = 0;
     double powIn = 0.0, powOut = 0.0;   // gated short-term power for level match
     std::atomic<float> levelAdjustDb { 0.0f };
 

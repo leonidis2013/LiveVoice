@@ -29,6 +29,7 @@ LiveVoiceProcessor::LiveVoiceProcessor()
     p.compOn = raw (compOn); p.compThr = raw (compThr); p.compRatio = raw (compRatio); p.compKnee = raw (compKnee);
     p.compAttack = raw (compAttack); p.compRelease = raw (compRelease); p.compAuto = raw (compAuto); p.compMakeup = raw (compMakeup);
     p.compMix = raw (compMix); p.compScHp = raw (compScHp); p.compAutoGain = raw (compAutoGain);
+    p.hpfOn = raw (hpfOn); p.hpfFreq = raw (hpfFreq); p.hpfSlope = raw (hpfSlope);
     p.lvlOn = raw (lvlOn); p.lvlTarget = raw (lvlTarget); p.lvlRange = raw (lvlRange); p.lvlSpeed = raw (lvlSpeed);
     p.proxOn = raw (proxOn); p.proxAmount = raw (proxAmount); p.warmth = raw (warmth);
 }
@@ -64,6 +65,7 @@ void LiveVoiceProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     pse.prepare (sampleRate, nCh);
     comp.prepare (sampleRate, nCh);
     proximity.prepare (sampleRate, nCh);
+    highPass.prepare (sampleRate, nCh);
     leveler.prepare (sampleRate, nCh);
     warmthFx.prepare (sampleRate, nCh);
     detector.prepare (sampleRate);
@@ -152,6 +154,7 @@ void LiveVoiceProcessor::updateSettings()
     cs.autoGain = p.compAutoGain->load() > 0.5f;
     comp.setSettings (cs);
 
+    highPass.setSettings ({ p.hpfOn->load() > 0.5f, p.hpfFreq->load(), juce::jlimit (0, 5, (int) p.hpfSlope->load()) });
     proximity.setSettings ({ p.proxOn->load() > 0.5f, p.proxAmount->load() });
     dsp::AutoLeveler::Settings ls;
     ls.on = p.lvlOn->load() > 0.5f; ls.targetDb = p.lvlTarget->load(); ls.rangeDb = p.lvlRange->load();
@@ -263,9 +266,10 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     tapMono (main, [this] (const float* m, int n) { inputTap.push (m, n); });
 
     // ---- processing chain (all zero latency) ----
+    feedCapture (main, numSamples, CaptureTarget::eq);   // before the HPF, so EQ Suggest can judge where it belongs
+    highPass.process (main, numSamples);
     pse.process (main, numSamples);
     feedback.process (main, numSamples);
-    feedCapture (main, numSamples, CaptureTarget::eq);
 
     const bool eqOnNow = p.eqOn->load() > 0.5f;
     if (eqOnNow && ! eqWasOn) dynEq.reset();
@@ -286,6 +290,11 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         deEsser.process (main, numSamples);
 
     proximity.process (main, numSamples);
+    if (const int dc = detector.getDetectionCount(); dc != lastDetectCount)
+    {
+        lastDetectCount = dc;
+        leveler.holdBoost (4.0);   // a ring was just found: the leveler must not turn up into it
+    }
     leveler.process (main, numSamples);
     warmthFx.process (main, numSamples);
     comp.process (main, numSamples);
@@ -578,6 +587,26 @@ void LiveVoiceProcessor::setStateInformation (const void* data, int sizeInBytes)
 
     xml->deleteAllChildElementsWithTagName ("FixedNotches");
     xml->deleteAllChildElementsWithTagName ("UiState");
+
+    // sessions from before 0.7.0: the high-pass lived on EQ band 1
+    {
+        std::vector<std::pair<juce::String, float>> values;
+        for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+            values.emplace_back (e->getStringAttribute ("id"), (float) e->getDoubleAttribute ("value"));
+        const auto before = values.size();
+        params::migrateLegacyHighPass (values);
+        if (values.size() != before)
+        {
+            for (auto& [id, v] : values)
+            {
+                juce::XmlElement* found = nullptr;
+                for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+                    if (e->getStringAttribute ("id") == id) { found = e; break; }
+                if (found == nullptr) { found = xml->createNewChildElement ("PARAM"); found->setAttribute ("id", id); }
+                found->setAttribute ("value", (double) v);
+            }
+        }
+    }
     apvts.replaceState (juce::ValueTree::fromXml (*xml));
 }
 

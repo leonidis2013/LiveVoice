@@ -124,7 +124,8 @@ namespace dsp
     // moves the gain toward Target, never more than Range up or down. It only moves
     // while someone is talking (within 20 dB of the target); between phrases it holds,
     // so it never raises the room or the stage between words. Turning down is twice as
-    // quick as turning up.
+    // quick as turning up. When feedback is detected, holdBoost() stops it turning UP for a few
+    // seconds (it may still turn down), so it can never feed a ring.
     class AutoLeveler
     {
     public:
@@ -147,8 +148,12 @@ namespace dsp
         void reset()
         {
             hpS.reset();
-            power = 0.0f; gainDb = 0.0f; gainLin = 1.0f; counter = 0;
+            power = 0.0f; gainDb = 0.0f; gainLin = 1.0f; counter = 0; holdSamples = 0;
         }
+
+        // Called from the audio thread when the feedback detector reports a ring.
+        void holdBoost (double seconds) noexcept { holdSamples = std::max (holdSamples, (int) (seconds * fs)); }
+        bool isHoldingBoost() const noexcept { return holding.load (std::memory_order_relaxed); }
 
         void setSettings (const Settings& s) noexcept { settings = s; }
         float getGainDb() const noexcept { return currentGain.load (std::memory_order_relaxed); }
@@ -180,13 +185,15 @@ namespace dsp
                         gainDb = offC * gainDb;   // glide back to unity when switched off
                     else if (levelDb > settings.targetDb - listenWindowDb && levelDb > -70.0f)
                     {
-                        const float desired = juce::jlimit (-settings.rangeDb, settings.rangeDb, settings.targetDb - levelDb);
+                        float desired = juce::jlimit (-settings.rangeDb, settings.rangeDb, settings.targetDb - levelDb);
+                        if (holdSamples > 0) desired = std::min (desired, gainDb);   // feedback: no turning up
                         const float c = desired < gainDb ? down : up;
                         gainDb = c * gainDb + (1.0f - c) * desired;
                     }
                     else
                         gainDb = juce::jlimit (-settings.rangeDb, settings.rangeDb, gainDb);   // hold (Range may have changed)
                     step = (dbToGain (gainDb) - g) / (float) controlInterval;
+                    holdSamples = std::max (0, holdSamples - controlInterval);
                 }
                 counter = (counter + 1) % controlInterval;
                 g += step;
@@ -196,6 +203,7 @@ namespace dsp
             gainLin = g;
             currentGain.store (gainDb, std::memory_order_relaxed);
             currentLevel.store (lastLevel, std::memory_order_relaxed);
+            holding.store (settings.on && holdSamples > 0, std::memory_order_relaxed);
         }
 
     private:
@@ -205,7 +213,9 @@ namespace dsp
         SvfCoeffs hp;
         SvfState hpS;
         float power = 0.0f, gainDb = 0.0f, gainLin = 1.0f, lastLevel = -100.0f;
+        int holdSamples = 0;
         std::atomic<float> currentGain { 0.0f }, currentLevel { -100.0f };
+        std::atomic<bool> holding { false };
     };
 
     // ------------------------------------------------------------------ warmth

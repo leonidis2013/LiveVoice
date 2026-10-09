@@ -46,6 +46,8 @@ private:
     void refreshCurves();
     juce::Point<float> handlePosition (int band) const;
     int hitBand (juce::Point<float> pos) const;
+    juce::Point<float> hpfHandlePosition() const;
+    bool hitHpf (juce::Point<float> pos) const;
     int hitNotch (juce::Point<float> pos) const;
     juce::RangedAudioParameter* param (const juce::String& id) const;
     params::BandType bandType (int band) const;
@@ -71,7 +73,8 @@ private:
     std::array<std::vector<float>, params::numEqBands> bandStatic, bandLive;
     std::array<std::vector<float>, params::numEqBands> bandSig;   // params each band was computed with
     std::array<float, params::numEqBands> bandLiveGain {};
-    std::vector<float> eqStatic, eqLive, notchCurve;
+    std::vector<float> eqStatic, eqLive, notchCurve, hpfCurve, hpfSig;
+    bool hpfWasOn = false, dragHpf = false, hoverHpf = false;
     std::vector<float> lastNotchSig;
     bool eqDirty = true, notchDirty = true, eqWasOn = false, fbWasOn = false;
     float lastNotchQ = 0.0f;

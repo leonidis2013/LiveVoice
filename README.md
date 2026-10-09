@@ -1,4 +1,4 @@
-# LiveVoice — zero-latency vocal processor (VST3)  ·  v0.6.0
+# LiveVoice — zero-latency vocal processor (VST3)  ·  v0.7.0
 
 A single VST3 plugin for live voice: pastor on a face mic, lectern speech, male and female vocals.
 Everything in the audio path is zero latency (the plugin reports 0 samples to the host).
@@ -13,16 +13,17 @@ Everything in the audio path is zero latency (the plugin reports 0 samples to th
 
 **Signal flow** (the bottom panels are laid out in this order, left to right):
 
-Input trim → **PSE** → **Feedback notches** → **6-band Dynamic EQ** → **De-esser** → **Proximity** → **Leveler** → **Warmth** → **Compressor** → Output trim
+Input trim → **High-pass filter** → **PSE** → **Feedback notches** → **6-band Dynamic EQ** → **De-esser** → **Proximity** → **Leveler** → **Warmth** → **Compressor** → Output trim
 
 | Section | What it does |
 |---|---|
 | **RTA** (top) | Input as a solid grey area, output as a blue area, the live dynamic-EQ curve (teal; dashed = static setting, shown only when the dynamics are moving it), the feedback notch curve (orange) and the de-esser band (quiet violet shading). Buttons: **IN / OUT / BOTH**, smoothing **1/3 · 1/6 · 1/12 oct**, **TILT** (+3 dB/oct, pink noise reads flat). |
 | **IN / OUT meters** (right of the RTA) | Vertical peak meters with a colour-zoned scale: grey = too low, blue = quiet but OK, **green = TARGET (-18 to -6 dBFS peaks)**, yellow = hot, red = clip risk. Peak-hold value on top; click to reset. |
 | **Middle row** | **De-ess history** (sibilance level, pink reduction from the top, threshold) and **compressor history** (input grey, compressed amber, makeup stacked in teal). They turn grey with an **OFF** tag when that module is switched off. Click the **10 s / 25 s / 60 s** button to change the span. Then the **compressor curve** with a live dot for the input level. |
+| **High-pass** (same panel as PSE) | Its own module, first in the chain: Freq (20–400 Hz) and Slope (6–48 dB/oct, default 80 Hz / 24 dB/oct). Removes rumble before the PSE, the feedback detector and everything else hear it. Also a draggable **HP** handle on the RTA. Works with the EQ off. |
 | **PSE** | Smoothly turns the mic down between phrases: less bleed and room pickup, less feedback risk while the mic is idle. |
 | **Feedback suppression** | Automatic detection + narrow notches. Modes: **Speech**, **Singing**, **Multipurpose**. **LOG** lists every frequency that rang (most frequent first, then all events with times) — copy it out after the service. |
-| **Dynamic EQ** | 6 bands at the classic voice spots (80 Hz HPF, 200 boom, 450 box, 1 k nasal, 3 k presence, 10 k air shelf); HP/LP 6-48 dB/oct on bands 1 and 6; proportional dynamics; **SOLO** (the soloed range is shaded on the RTA in the band's colour); **SUGGEST**. |
+| **Dynamic EQ** | 6 bands at the classic voice spots (120 Hz low shelf, 200 boom, 450 box, 1 k nasal, 3 k presence, 10 k air shelf); band 1 Bell/Low Shelf, band 6 Bell/High Shelf/LP 6-48 dB/oct; proportional dynamics; **SOLO** (the soloed range is shaded on the RTA in the band's colour); **SUGGEST**. |
 | **De-esser** | Band (narrow) / Shelf / Wideband, Width, RELATIVE detection, **SOLO**, **SUGGEST**. |
 | **Leveler** (+ TONE) | **Leveler:** slowly rides the voice toward a Target level (±Range, Slow/Medium/Fast) before the compressor, so a pastor who turns away or leans in stays steady. It only moves while someone talks and holds between phrases, so it never raises the room. **PROXIMITY:** learns the voice's normal low-end balance and turns the low end down (250 Hz shelf, up to Max Cut) when they get close and it booms. **Warmth:** a little 2nd/3rd harmonic on the low-mids only; 0 % = fully bypassed. |
 | **Compressor** | Transparent vocal compressor with **AUTO GAIN** (adds back the average level it takes away, so it doesn't change the overall loudness) and a stacked **IN / OUT** meter: input (grey), compressed level (amber), makeup on top (teal), plus GR and makeup readouts. |
@@ -54,7 +55,7 @@ Other layouts: mono in → mono out (FOH only, no monitor channel) and stereo in
 ## Suggest (de-esser and EQ)
 Press **SUGGEST** while the person talks normally; it listens for 20 s (press again to cancel).
 - **De-esser:** finds where their "s" energy peaks and how wide it is, sets Freq and Width, and a threshold (absolute and relative) low enough that nearly every "s" gets most of Range, while vowels stay untouched.
-- **EQ:** compares the voice's long-term spectrum with its own smoothed trend and suggests a high-pass and **gentle cuts (4 dB max)** where it builds up in the boom / box / nasal / harsh ranges, plus a small air lift only if the voice is dull. Static gains only; your dynamic settings are untouched.
+- **EQ:** compares the voice's long-term spectrum with its own smoothed trend and suggests a high-pass (set on the HPF module) and **gentle cuts (4 dB max)** where it builds up in the boom / box / nasal / harsh ranges, plus a small air lift only if the voice is dull. Static gains only; your dynamic settings are untouched.
 
 The result appears right in the panel with **KEEP** and **REVERT**: REVERT puts back exactly the values from before the suggestion (it's also one step on the UNDO list). They're starting points — natural voice resonances can show up as small cuts, so listen and adjust.
 
@@ -83,7 +84,7 @@ The result appears right in the panel with **KEEP** and **REVERT**: REVERT puts 
 Watch the key-level bar while the pastor talks: set **Threshold** just under the softest speech (the white mark), with **Range** 6–12 dB for a natural result. The thin grey mark is where it starts closing (4 dB of hysteresis), and **Hold** keeps it open through short gaps between words. Key HP/LP (in SETTINGS) decide what the PSE listens to (default 150 Hz–8 kHz ignores rumble and cymbals). The bar keeps working with PSE off, so you can set the threshold before switching it on.
 
 ## Leveler, proximity and warmth — setting them up
-- **Leveler:** with the pastor talking normally, set **Target** where the **RIDING** bar sits near 0 dB. **Range** 4–6 dB is plenty; every dB of boost also raises the feedback risk, so don't go wide on a lapel or face mic in a live room. Medium speed for speech; Slow for singing (so it doesn't fight phrasing). The target is a ~0.3 s average including the gaps between words, so it reads well below the peaks (about −28 for healthy −18 to −6 dB peaks).
+- **Leveler:** when the feedback detector finds a ring, the leveler stops turning up for 4 s (the meter shows **HOLD (FEEDBACK)**); it can still turn down. With the pastor talking normally, set **Target** where the **RIDING** bar sits near 0 dB. **Range** 4–6 dB is plenty; every dB of boost also raises the feedback risk, so don't go wide on a lapel or face mic in a live room. Medium speed for speech; Slow for singing (so it doesn't fight phrasing). The target is a ~0.3 s average including the gaps between words, so it reads well below the peaks (about −28 for healthy −18 to −6 dB peaks).
 - **Proximity:** switch it on and let them talk for a few seconds (it learns the normal balance in about 1 s, then keeps adapting slowly). The readout shows the cut it's applying. If someone stays close for minutes it gradually accepts that as their new normal.
 - **Warmth:** start around 20–30 % on thin voices; leave it at 0 for already-full voices.
 
@@ -117,7 +118,7 @@ Copy `build\LiveVoice_artefacts\Release\VST3\LiveVoice.vst3` to `C:\Program File
 cmake -S . -B build -G Xcode
 cmake --build build --config Release
 ```
-Copy `build/LiveVoice_artefacts/Release/VST3/LiveVoice.vst3` to `~/Library/Audio/Plug-Ins/VST3/`.
+Copy `build/LiveVoice_artefacts/Release/VST3/LiveVoice.vst3` to `~/Library/Audio/Plug-Ins/VST3/`, **replacing** the old one (the build does not install itself). If LiveProfessor still shows an older version under the logo, it is loading an old copy: delete every LiveVoice.vst3 in `~/Library/Audio/Plug-Ins/VST3/` and `/Library/Audio/Plug-Ins/VST3/`, copy the new one in, and rescan plugins in LiveProfessor.
 A locally built plugin runs on your own Mac; to give it to other Macs it needs to be code-signed/notarized (or the receiving user must allow it in *Privacy & Security*).
 
 **No compiler handy?** Push this folder to a GitHub repository — the included workflow (`.github/workflows/build.yml`) builds Windows and macOS VST3s and attaches them to each run under *Actions → Artifacts*.
@@ -128,7 +129,7 @@ cmake -S . -B build -DLIVEVOICE_BUILD_TESTS=ON
 cmake --build build --target LiveVoiceTests --config Release
 build/Tests/LiveVoiceTests_artefacts/Release/LiveVoiceTests
 ```
-The suite (92 checks) covers everything from the earlier versions (zero latency, proportional dynamic EQ, all HP/LP slopes, narrow de-esser, relative detection, PSE, compressor, presets, the simulated feedback loop in every mode, false detections, ring-out Learn and recall) plus, new in 0.4.0: **FOH (channel 1) bit-identical while soloing on channel 2**, monitor A/B playing the exact dry input, monitor following FOH otherwise, de-esser Suggest finding the sibilance (6.8 kHz on a 7 kHz test voice) and giving moderate reduction, EQ Suggest finding a planted 450 Hz build-up with gentle cuts, the Suggest capture, undo/redo, and A/B switching and session recall. New in 0.5.0: the de-esser on a harsh synthetic talker (s sounds −5.7 dB, vowels unchanged), Suggest on the same talker, compressor auto gain (−6.1 dB → −0.7 dB) and the output level match. New in 0.6.0: the leveler evening a 15 dB soft/loud difference to ~5.5 dB and holding during silence, proximity compensation (no change at normal distance, about −4.6 dB on a +9 dB low-end boost when close), and warmth (exact bypass at 0 %, 2nd harmonic −20 dB at 100 %, highs untouched).
+The suite (98 checks) covers everything from the earlier versions (zero latency, proportional dynamic EQ, all HP/LP slopes, narrow de-esser, relative detection, PSE, compressor, presets, the simulated feedback loop in every mode, false detections, ring-out Learn and recall) plus, new in 0.4.0: **FOH (channel 1) bit-identical while soloing on channel 2**, monitor A/B playing the exact dry input, monitor following FOH otherwise, de-esser Suggest finding the sibilance (6.8 kHz on a 7 kHz test voice) and giving moderate reduction, EQ Suggest finding a planted 450 Hz build-up with gentle cuts, the Suggest capture, undo/redo, and A/B switching and session recall. New in 0.5.0: the de-esser on a harsh synthetic talker (s sounds −5.7 dB, vowels unchanged), Suggest on the same talker, compressor auto gain (−6.1 dB → −0.7 dB) and the output level match. New in 0.6.0: the leveler evening a 15 dB soft/loud difference to ~5.5 dB and holding during silence, proximity compensation (no change at normal distance, about −4.6 dB on a +9 dB low-end boost when close), and warmth (exact bypass at 0 %, 2nd harmonic −20 dB at 100 %, highs untouched). New in 0.7.0: the HPF module's slopes (6–48 dB/oct as designed), the HPF working with the EQ off, the PSE no longer opening on rumble, old presets and sessions moving their band-1 high-pass to the HPF, and the leveler holding while feedback is caught.
 
 `LiveVoiceTests --profile` prints CPU per module and per display part.
 `LiveVoiceTests --snapshot out.png [light|toggle]` renders the UI to a PNG (a file name containing `settings` opens the settings card).
@@ -155,6 +156,7 @@ Source/dsp/DeEsser.h            de-esser (band/shelf/wideband, absolute/relative
 Source/dsp/LevelHistory.h       lock-free history for the scrolling strips
 Source/dsp/VoiceAnalysis.*      de-esser / EQ Suggest analysis
 Source/dsp/PrimarySourceExpander.h  PSE
+Source/dsp/HighPass.h           high-pass filter module
 Source/dsp/LevelTone.h          leveler, proximity compensation, warmth
 Source/dsp/VocalCompressor.h    output compressor
 Source/ui/Theme.h               dark + light palettes, look-and-feel
@@ -162,3 +164,6 @@ Source/ui/SettingsPanel.*       settings card (switches, drop-downs)
 Source/ui/*                     single-page UI
 Tests/TestMain.cpp              offline tests + UI snapshot tool
 ```
+
+## Upgrading from 0.6 or earlier
+Sessions, presets and A/B slots saved before 0.7.0 load automatically: a high-pass that was on EQ band 1 moves to the new HPF module (same frequency and slope) and band 1 becomes a flat low shelf. Old settings without a band-1 high-pass load with the HPF off, so they sound exactly as before.

@@ -54,8 +54,10 @@ PresetManager::Values PresetManager::captureValues() const
     return v;
 }
 
-void PresetManager::applyValues (const Values& values)
+void PresetManager::applyValues (const Values& original)
 {
+    Values values (original);
+    params::migrateLegacyHighPass (values);   // presets / A-B slots saved before 0.7.0
     for (auto* p : apvts.processor.getParameters())
     {
         auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p);
@@ -156,6 +158,12 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
         v.push_back ({ bAtt (b), att });
         v.push_back ({ bRel (b), rel });
     };
+    auto hpf = [] (V& v, float freq, int slopeIndex)
+    {
+        v.push_back ({ params::hpfOn, 1.0f });
+        v.push_back ({ params::hpfFreq, freq });
+        v.push_back ({ params::hpfSlope, (float) slopeIndex });
+    };
     auto fb = [] (V& v, int mode, float sens, float depth, int width, float hold, float lo, float hi)
     {
         v.push_back ({ fbMode, (float) mode });
@@ -205,13 +213,13 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
     out.push_back ({ "Default", {} });
 
     // Every preset uses the same band roles so you always know where to reach:
-    // 1 HPF (rumble) | 2 boom/proximity | 3 boxiness | 4 nasal/honk | 5 presence/harshness | 6 air (shelf)
-    // bType: band 1 {0 Bell, 1 Low Shelf, 2 HP6, 3 HP12, 4 HP18, 5 HP24, 6 HP36, 7 HP48}; band 6 the same with LP / High Shelf.
+    // HPF module (rumble) | EQ 1 low shelf | 2 boom/proximity | 3 boxiness | 4 nasal/honk | 5 presence/harshness | 6 air (shelf)
+    // hpf slope index {0 6, 1 12, 2 18, 3 24, 4 36, 5 48 dB/oct}; bType band 6 {0 Bell, 1 High Shelf, 2..7 LP 6..48}.
 
     { // Headworn/face mic on a pastor: aggressive feedback control, tame chest boom
         V v;
         fb (v, 0, 55.0f, -18.0f, 2, 30.0f, 150.0f, 10000.0f);
-        v.push_back ({ bType (0), 5.0f }); band (v, 0, true, 110.0f, 0.0f, 0.71f);
+        hpf (v, 110.0f, 3);
         band (v, 1, true, 220.0f, -1.5f, 1.0f);  dyn (v, 1, -30.0f, -4.0f, 2.0f, 15.0f, 150.0f);
         band (v, 2, true, 450.0f, -1.0f, 1.4f);
         band (v, 3, true, 1000.0f, 0.0f, 1.4f);
@@ -226,7 +234,7 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
     { // Pulpit / lectern gooseneck: more proximity boom to manage
         V v;
         fb (v, 0, 60.0f, -18.0f, 2, 30.0f, 150.0f, 10000.0f);
-        v.push_back ({ bType (0), 5.0f }); band (v, 0, true, 120.0f, 0.0f, 0.71f);
+        hpf (v, 120.0f, 3);
         band (v, 1, true, 200.0f, 0.0f, 1.0f);   dyn (v, 1, -28.0f, -6.0f, 2.5f, 15.0f, 150.0f);
         band (v, 2, true, 450.0f, -1.5f, 1.4f);
         band (v, 3, true, 1000.0f, 0.0f, 1.4f);
@@ -241,7 +249,7 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
     { // Handheld male vocal: dynamic boom band tames proximity effect
         V v;
         fb (v, 1, 45.0f, -15.0f, 2, 20.0f, 150.0f, 10000.0f);
-        v.push_back ({ bType (0), 5.0f }); band (v, 0, true, 90.0f, 0.0f, 0.71f);
+        hpf (v, 90.0f, 3);
         band (v, 1, true, 200.0f, 0.0f, 1.0f);   dyn (v, 1, -26.0f, -6.0f, 2.5f, 15.0f, 150.0f);
         band (v, 2, true, 400.0f, -1.5f, 1.4f);
         band (v, 3, true, 1000.0f, -0.5f, 1.4f);
@@ -255,7 +263,7 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
     { // Handheld female vocal: less boom, watch the 1 kHz honk and 3-4 kHz edge
         V v;
         fb (v, 1, 45.0f, -15.0f, 2, 20.0f, 150.0f, 10000.0f);
-        v.push_back ({ bType (0), 5.0f }); band (v, 0, true, 120.0f, 0.0f, 0.71f);
+        hpf (v, 120.0f, 3);
         band (v, 1, true, 250.0f, 0.0f, 1.0f);   dyn (v, 1, -28.0f, -4.0f, 2.0f, 15.0f, 150.0f);
         band (v, 2, true, 500.0f, -1.0f, 1.4f);
         band (v, 3, true, 1100.0f, -1.0f, 1.4f);
@@ -269,7 +277,7 @@ std::vector<PresetManager::Factory> PresetManager::buildFactoryPresets()
     { // Worship leader who both speaks and sings
         V v;
         fb (v, 2, 50.0f, -15.0f, 2, 25.0f, 150.0f, 10000.0f);
-        v.push_back ({ bType (0), 5.0f }); band (v, 0, true, 100.0f, 0.0f, 0.71f);
+        hpf (v, 100.0f, 3);
         band (v, 1, true, 220.0f, 0.0f, 1.0f);   dyn (v, 1, -27.0f, -4.0f, 2.0f, 15.0f, 150.0f);
         band (v, 2, true, 450.0f, -1.0f, 1.4f);
         band (v, 3, true, 1000.0f, 0.0f, 1.4f);

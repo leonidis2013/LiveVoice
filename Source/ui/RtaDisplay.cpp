@@ -1,4 +1,5 @@
 #include "RtaDisplay.h"
+#include "../dsp/HighPass.h"
 #include "Theme.h"
 
 using namespace params;
@@ -224,10 +225,23 @@ void RtaDisplay::refreshCurves()
             anyChanged = true;
         }
     }
+    // high-pass module (drawn as part of the EQ curve, but works with the EQ off too)
+    const std::vector<float> hsig { v (params::hpfOn), v (params::hpfFreq), v (params::hpfSlope) };
+    if (hsig != hpfSig || hpfCurve.size() != n)
+    {
+        hpfSig = hsig;
+        hpfWasOn = hsig[0] > 0.5f;
+        const dsp::HighPass::Settings hs { hpfWasOn, hsig[1], (int) hsig[2] };
+        const double fs = proc.currentSampleRate.load();
+        hpfCurve.resize (n);
+        for (size_t i = 0; i < n; ++i) hpfCurve[i] = dsp::HighPass::responseDb (hs, curveFreqs[i], fs);
+        anyChanged = true;
+    }
+
     if (anyChanged)
     {
-        eqStatic.assign (n, 0.0f);
-        eqLive.assign (n, 0.0f);
+        eqStatic = hpfCurve;
+        eqLive = hpfCurve;
         if (eqIsOn)
             for (int b = 0; b < numEqBands; ++b)
                 for (size_t i = 0; i < n; ++i) { eqStatic[i] += bandStatic[(size_t) b][i]; eqLive[i] += bandLive[(size_t) b][i]; }
@@ -482,7 +496,7 @@ void RtaDisplay::paint (juce::Graphics& g)
                 g.setColour (theme::feedback.withAlpha (0.95f));
                 g.strokePath (fb, juce::PathStrokeType (1.6f));
             }
-            if (eqWasOn)
+            if (eqWasOn || hpfWasOn)
             {
                 juce::Path live, stat, fill;
                 const float y0 = yForEqDb (0.0f);
@@ -615,8 +629,31 @@ void RtaDisplay::drawNotchMarkers (juce::Graphics& g)
     }
 }
 
+juce::Point<float> RtaDisplay::hpfHandlePosition() const
+{
+    // sits on the curve at the corner (-3 dB), just under the 0 dB line where band 1 lives
+    return { xForFreq (proc.apvts.getRawParameterValue (params::hpfFreq)->load()), yForEqDb (-3.0f) + 6.0f };
+}
+
+bool RtaDisplay::hitHpf (juce::Point<float> pos) const
+{
+    return proc.apvts.getRawParameterValue (params::hpfOn)->load() > 0.5f && hpfHandlePosition().getDistanceFrom (pos) < 12.0f;
+}
+
 void RtaDisplay::drawHandles (juce::Graphics& g)
 {
+    if (proc.apvts.getRawParameterValue (params::hpfOn)->load() > 0.5f)
+    {
+        const auto pos = hpfHandlePosition();
+        auto r = juce::Rectangle<float> (24.0f, 18.0f).withCentre (pos).expanded (hoverHpf || dragHpf ? 1.0f : 0.0f);
+        g.setColour (theme::pse.withAlpha (0.25f));
+        g.fillRoundedRectangle (r, 5.0f);
+        g.setColour (theme::pse);
+        g.drawRoundedRectangle (r, 5.0f, dragHpf ? 2.0f : 1.3f);
+        g.setFont (theme::font (10.0f, true));
+        g.drawText ("HP", r, juce::Justification::centred);
+    }
+
     if (proc.apvts.getRawParameterValue (params::eqOn)->load() < 0.5f) return;
 
     for (int b = 0; b < numEqBands; ++b)
@@ -645,6 +682,14 @@ void RtaDisplay::drawHandles (juce::Graphics& g)
 void RtaDisplay::mouseDown (const juce::MouseEvent& e)
 {
     const auto pos = e.position;
+
+    if (hitHpf (pos))
+    {
+        dragHpf = true;
+        if (auto* f = param (params::hpfFreq)) f->beginChangeGesture();
+        repaint();
+        return;
+    }
 
     if (const int n = hitNotch (pos); n >= 0)
     {
@@ -683,6 +728,11 @@ void RtaDisplay::mouseDown (const juce::MouseEvent& e)
 
 void RtaDisplay::mouseDrag (const juce::MouseEvent& e)
 {
+    if (dragHpf)
+    {
+        setParam (params::hpfFreq, juce::jlimit (20.0f, 400.0f, freqForX (e.position.x)));
+        return;
+    }
     if (dragBand < 0) return;
     setParam (bFreq (dragBand), juce::jlimit (minFreq, maxFreq, freqForX (e.position.x)));
     if (! isPassType (bandType (dragBand)))
@@ -691,6 +741,12 @@ void RtaDisplay::mouseDrag (const juce::MouseEvent& e)
 
 void RtaDisplay::mouseUp (const juce::MouseEvent&)
 {
+    if (dragHpf)
+    {
+        if (auto* f = param (params::hpfFreq)) f->endChangeGesture();
+        dragHpf = false;
+        repaint();
+    }
     if (dragBand >= 0)
     {
         if (auto* f = param (bFreq (dragBand))) f->endChangeGesture();
@@ -701,11 +757,12 @@ void RtaDisplay::mouseUp (const juce::MouseEvent&)
 
 void RtaDisplay::mouseMove (const juce::MouseEvent& e)
 {
-    const int hb = hitBand (e.position), hn = hitNotch (e.position);
-    if (hb != hoverBand || hn != hoverNotch)
+    const bool hh = hitHpf (e.position);
+    const int hb = hh ? -1 : hitBand (e.position), hn = hitNotch (e.position);
+    if (hb != hoverBand || hn != hoverNotch || hh != hoverHpf)
     {
-        hoverBand = hb; hoverNotch = hn;
-        setMouseCursor (hb >= 0 ? juce::MouseCursor::DraggingHandCursor
+        hoverBand = hb; hoverNotch = hn; hoverHpf = hh;
+        setMouseCursor (hh ? juce::MouseCursor::LeftRightResizeCursor : hb >= 0 ? juce::MouseCursor::DraggingHandCursor
                                 : hn >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
         repaint();
     }
@@ -714,6 +771,7 @@ void RtaDisplay::mouseMove (const juce::MouseEvent& e)
 void RtaDisplay::mouseExit (const juce::MouseEvent&)
 {
     hoverBand = hoverNotch = -1;
+    hoverHpf = false;
     repaint();
 }
 

@@ -33,6 +33,12 @@ namespace params
     enum class FbMode { speech = 0, singing, multipurpose };
 
     // ---- dynamic EQ ----
+    // High-pass filter: its own module, first in the chain (before PSE and feedback detection)
+    inline const juce::String hpfOn    { "hpfOn" };
+    inline const juce::String hpfFreq  { "hpfFreq" };
+    inline const juce::String hpfSlope { "hpfSlope" };
+    inline const juce::StringArray hpfSlopeChoices { "6 dB/oct", "12 dB/oct", "18 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct" };
+
     inline const juce::String eqOn { "eqOn" };
 
     inline juce::String band (int b, const char* suffix)  { return "b" + juce::String (b + 1) + "_" + suffix; }
@@ -48,12 +54,11 @@ namespace params
     inline juce::String bAtt   (int b) { return band (b, "att"); }
     inline juce::String bRel   (int b) { return band (b, "rel"); }
 
-    // Band types. Band 1 offers Bell, Low Shelf and high-pass 6..48 dB/oct;
+    // Band types. Band 1 offers Bell and Low Shelf (the high-pass is its own module since 0.7.0);
     // band 6 offers Bell, High Shelf and low-pass 6..48 dB/oct.
     enum class BandType { bell = 0, lowShelf, highShelf, highPass, lowPass };
 
-    inline const juce::StringArray band1Choices { "Bell", "Low Shelf", "HP 6 dB/oct", "HP 12 dB/oct", "HP 18 dB/oct",
-                                                  "HP 24 dB/oct", "HP 36 dB/oct", "HP 48 dB/oct" };
+    inline const juce::StringArray band1Choices { "Bell", "Low Shelf" };
     inline const juce::StringArray band6Choices { "Bell", "High Shelf", "LP 6 dB/oct", "LP 12 dB/oct", "LP 18 dB/oct",
                                                   "LP 24 dB/oct", "LP 36 dB/oct", "LP 48 dB/oct" };
     inline constexpr int slopeDbPerOct[] { 6, 12, 18, 24, 36, 48 };
@@ -64,7 +69,7 @@ namespace params
     {
         const bool first = band == 0, last = band == numEqBands - 1;
         if (! first && ! last) return {};
-        choice = juce::jlimit (0, 7, choice);
+        choice = juce::jlimit (0, first ? 1 : 7, choice);
         if (choice == 0) return {};
         if (choice == 1) return { first ? BandType::lowShelf : BandType::highShelf, 12 };
         return { first ? BandType::highPass : BandType::lowPass, slopeDbPerOct[choice - 2] };
@@ -75,11 +80,11 @@ namespace params
     inline bool isPassType (BandType t) { return t == BandType::highPass || t == BandType::lowPass; }
 
     // Defaults sit on the classic trouble/tone spots of the human voice:
-    // 80 Hz rumble (HPF), 200 Hz boom/proximity, 450 Hz boxiness, 1 kHz nasal honk,
+    // (rumble is the HPF module's job) 120 Hz low end (shelf), 200 Hz boom/proximity, 450 Hz boxiness, 1 kHz nasal honk,
     // 3 kHz presence/harshness, 10 kHz air (high shelf). Sibilance (5-8 kHz) is the de-esser's job.
-    inline constexpr float defaultBandFreq[numEqBands] { 80.0f, 200.0f, 450.0f, 1000.0f, 3000.0f, 10000.0f };
+    inline constexpr float defaultBandFreq[numEqBands] { 120.0f, 200.0f, 450.0f, 1000.0f, 3000.0f, 10000.0f };
     inline constexpr float defaultBandQ[numEqBands]    { 0.71f, 1.0f, 1.4f, 1.4f, 1.2f, 0.71f };
-    inline const char* const bandRoleNames[numEqBands] { "Rumble (HPF)", "Boom / proximity", "Boxiness", "Nasal / honk",
+    inline const char* const bandRoleNames[numEqBands] { "Low end (shelf)", "Boom / proximity", "Boxiness", "Nasal / honk",
                                                          "Presence / harshness", "Air" };
 
     // ---- de-esser ----
@@ -206,13 +211,18 @@ namespace params
         addF (fbLoFreq,   "Detect Low Limit", freqRange (60.0f, 2000.0f), 150.0f, hz);
         addF (fbHiFreq,   "Detect High Limit", freqRange (2000.0f, 16000.0f), 10000.0f, hz);
 
+        // High-pass filter
+        addB (hpfOn,    "HPF On", true);
+        addF (hpfFreq,  "HPF Freq", freqRange (20.0f, 400.0f), 80.0f, hz);
+        addC (hpfSlope, "HPF Slope", hpfSlopeChoices, 3);   // 24 dB/oct
+
         // Dynamic EQ
         addB (eqOn, "Dynamic EQ On", true);
         for (int b = 0; b < numEqBands; ++b)
         {
             const String n = "Band " + String (b + 1) + " ";
             addB (bOn (b), n + "On", true);   // all on at 0 dB = transparent, handles ready to use
-            if (b == 0)                addC (bType (b), n + "Type", band1Choices, 5);   // HP 24 dB/oct
+            if (b == 0)                addC (bType (b), n + "Type", band1Choices, 1);   // low shelf
             if (b == numEqBands - 1)   addC (bType (b), n + "Type", band6Choices, 1);   // high shelf
             addF (bFreq (b),  n + "Freq",      freqRange (20.0f, 20000.0f), defaultBandFreq[b], hz);
             addF (bGain (b),  n + "Gain",      { -18.0f, 18.0f, 0.1f }, 0.0f, db);
@@ -269,5 +279,32 @@ namespace params
         addF (warmth,     "Warmth", { 0.0f, 100.0f, 1.0f }, 0.0f, pct);
 
         return layout;
+    }
+
+    // Settings saved before 0.7.0 had the high-pass on EQ band 1 (type choices 2..7 = HP 6..48 dB/oct).
+    // Moves it to the HPF module and turns band 1 into a flat low shelf. Settings that already have
+    // the HPF are left alone; old settings whose band 1 was not a high-pass get the HPF off, so they
+    // sound exactly as before. Works on (id, real value) lists: presets, A/B slots, sessions.
+    inline void migrateLegacyHighPass (std::vector<std::pair<juce::String, float>>& values)
+    {
+        auto find = [&] (const juce::String& id) -> float* { for (auto& [k, v] : values) if (k == id) return &v; return nullptr; };
+        if (values.empty() || find (hpfOn) != nullptr) return;
+        float* type = find (bType (0));
+        if (type == nullptr) return;
+        if (*type >= 2.0f)
+        {
+            const int slopeIndex = juce::jlimit (0, 5, juce::roundToInt (*type) - 2);
+            const float* f = find (bFreq (0));
+            values.emplace_back (hpfOn, 1.0f);
+            values.emplace_back (hpfFreq, juce::jlimit (20.0f, 400.0f, f != nullptr ? *f : 80.0f));
+            values.emplace_back (hpfSlope, (float) slopeIndex);
+            type = find (bType (0));
+            *type = 1.0f;   // low shelf
+            if (float* bf = find (bFreq (0))) *bf = defaultBandFreq[0];
+            if (float* bg = find (bGain (0))) *bg = 0.0f;
+            if (float* bq = find (bQ (0))) *bq = defaultBandQ[0];
+        }
+        else
+            values.emplace_back (hpfOn, 0.0f);
     }
 }

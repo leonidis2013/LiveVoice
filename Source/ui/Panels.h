@@ -277,11 +277,19 @@ public:
     explicit PsePanel (LiveVoiceProcessor& p);
     void resized() override;
     void update();
+    void paint (juce::Graphics&) override;
 private:
     LiveVoiceProcessor& proc;
+    // high-pass (the panel's power button) - first in the chain
+    Knob hpfFreq { "Freq", theme::pse };
+    Combo hpfSlope;
+    juce::Label slopeLabel;
+    // PSE
+    ToggleBtn pseOn { "ON", theme::pse };
     PseKeyMeter keyMeter { proc };
     Knob thr { "Threshold", theme::pse }, range { "Range", theme::pse }, attack { "Attack", theme::pse },
          hold { "Hold", theme::pse }, release { "Release", theme::pse };
+    int pseY = 0;
 };
 
 // Leveler gain (bipolar, centre = 0 dB) with the number beside it.
@@ -294,7 +302,7 @@ public:
 private:
     LiveVoiceProcessor& proc;
     float gain = 0.0f, painted = 1000.0f;
-    bool on = false;
+    bool on = false, holding = false;
 };
 
 // Leveler (power button) plus TONE: proximity compensation and warmth.

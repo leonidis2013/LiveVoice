@@ -1183,10 +1183,10 @@ void EqPanel::runSuggestion()
     std::vector<std::pair<juce::String, float>> before;
     auto remember = [&] (const juce::String& id) { before.emplace_back (id, raw (proc, id)); };
     for (int b = 0; b < numEqBands; ++b) { remember (bOn (b)); remember (bFreq (b)); remember (bGain (b)); remember (bQ (b)); }
-    remember (bType (0)); remember (bType (numEqBands - 1));
+    remember (bType (numEqBands - 1)); remember (params::hpfOn); remember (params::hpfFreq);
 
     proc.undoManager.beginNewTransaction ("EQ suggest");
-    setReal (proc, bOn (0), 1.0f); setReal (proc, bType (0), 5.0f); setReal (proc, bFreq (0), s.hpFreq);
+    setReal (proc, params::hpfOn, 1.0f); setReal (proc, params::hpfFreq, s.hpFreq);
     juce::String txt = "HPF " + juce::String (juce::roundToInt (s.hpFreq));
     for (int i = 0; i < 4; ++i)
     {
@@ -1323,11 +1323,25 @@ void DeEssPanel::runSuggestion()
                      + ", " + (relMode ? "rel thr " : "thr ") + juce::String (thrShown) + " dB", std::move (before));
 }
 
-// ================================================================ PSE panel
-PsePanel::PsePanel (LiveVoiceProcessor& p) : ModulePanel ("PSE", theme::pse), proc (p)
+// ================================================================ high-pass + PSE panel
+PsePanel::PsePanel (LiveVoiceProcessor& p) : ModulePanel ("HIGH-PASS", theme::pse), proc (p)
 {
     auto& s = proc.apvts;
-    power.attach (s, pseOn);
+    power.attach (s, params::hpfOn);
+    power.setTooltip ("High-pass filter, first in the chain: removes rumble, stage thump and handling noise before the PSE, "
+                      "the feedback detector and everything else hear it. Also on the RTA as the HP handle.");
+    hpfFreq.attach (s, params::hpfFreq);
+    hpfSlope.attach (s, params::hpfSlope, params::hpfSlopeChoices);
+    hpfSlope.setTooltip ("Steepness. 12-18 dB/oct sounds most natural; 24 dB/oct is a good live default for face and lapel mics.");
+    slopeLabel.setText ("Slope", juce::dontSendNotification);
+    slopeLabel.setFont (theme::font (11.5f));
+    slopeLabel.setColour (juce::Label::textColourId, theme::textDim);
+    slopeLabel.setJustificationType (juce::Justification::centred);
+    for (auto* c : { (juce::Component*) &hpfFreq, (juce::Component*) &hpfSlope, (juce::Component*) &slopeLabel }) addAndMakeVisible (c);
+
+    pseOn.attach (s, params::pseOn);
+    pseOn.setTooltip ("Primary Source Expander on/off.");
+    addAndMakeVisible (pseOn);
     keyMeter.setTooltip ("Primary Source Expander: smoothly turns the mic down between phrases, cutting stage bleed and room pickup "
                          "and lowering the chance of feedback while the mic is idle. Set the threshold just below the softest speech.");
     addAndMakeVisible (keyMeter);
@@ -1340,15 +1354,40 @@ void PsePanel::resized()
 {
     layoutHeader();
     auto r = getContentBounds();
-    keyMeter.setBounds (r.removeFromTop (40));
-    r.removeFromTop (10);
-    const int knobH = std::min (96, (r.getHeight() - 10) / 2);
+    const int knobH = std::min (92, (r.getHeight() - 104) / 3);
     auto row = r.removeFromTop (knobH);
+    const int half = row.getWidth() / 2;
+    hpfFreq.setBounds (row.removeFromLeft (half));
+    slopeLabel.setBounds (row.removeFromTop (16).withTrimmedTop (2));
+    hpfSlope.setBounds (row.removeFromTop (26).reduced (4, 0));
+
+    r.removeFromTop (10);
+    pseY = r.getY();
+    r.removeFromTop (8);
+    row = r.removeFromTop (26);
+    pseOn.setBounds (row.removeFromRight (42).withSizeKeepingCentre (42, 20).translated (-2, 0));
+    r.removeFromTop (6);
+    keyMeter.setBounds (r.removeFromTop (38));
+    r.removeFromTop (6);
+    row = r.removeFromTop (knobH);
     const int kw = row.getWidth() / 3;
     for (auto* k : { &thr, &range, &attack }) k->setBounds (row.removeFromLeft (kw));
-    r.removeFromTop (10);
+    r.removeFromTop (6);
     row = r.removeFromTop (knobH).withTrimmedLeft (kw / 2);
     for (auto* k : { &hold, &release }) k->setBounds (row.removeFromLeft (kw));
+}
+
+void PsePanel::paint (juce::Graphics& g)
+{
+    ModulePanel::paint (g);
+    auto b = getContentBounds();
+    g.setColour (theme::border);
+    g.drawHorizontalLine (pseY, (float) b.getX(), (float) b.getRight());
+    g.setColour (accent);
+    g.fillRoundedRectangle ((float) b.getX(), (float) pseY + 15.0f, 3.0f, 12.0f, 1.5f);
+    g.setColour (theme::text);
+    g.setFont (theme::font (13.0f, true));
+    g.drawText ("PSE", b.getX() + 10, pseY + 8, 120, 26, juce::Justification::centredLeft);
 }
 
 void PsePanel::update()
@@ -1361,9 +1400,10 @@ void LevelerMeter::update()
 {
     const bool o = raw (proc, lvlOn) > 0.5f;
     const float gdb = proc.leveler.getGainDb();
-    if (o != on || std::abs (gdb - painted) > 0.05f)
+    const bool h = proc.leveler.isHoldingBoost();
+    if (o != on || h != holding || std::abs (gdb - painted) > 0.05f)
     {
-        on = o; gain = gdb; painted = gdb;
+        on = o; gain = gdb; painted = gdb; holding = h;
         repaint();
     }
 }
@@ -1378,6 +1418,12 @@ void LevelerMeter::paint (juce::Graphics& g)
     g.setFont (theme::font (11.5f, true));
     g.setColour (on ? theme::output : theme::textFaint);
     g.drawText (on ? (gain >= 0.05f ? "+" : "") + juce::String (gain, 1) + " dB" : "off", top, juce::Justification::centredRight);
+    if (holding)
+    {
+        g.setColour (theme::feedback);
+        g.setFont (theme::font (9.5f, true));
+        g.drawText ("HOLD (FEEDBACK)", top.withTrimmedLeft (44.0f), juce::Justification::centredLeft);
+    }
 
     auto bar = r.removeFromTop (10.0f).reduced (0.0f, 1.0f);
     constexpr float span = 12.0f;
@@ -1404,7 +1450,8 @@ LevelTonePanel::LevelTonePanel (LiveVoiceProcessor& p) : ModulePanel ("LEVELER",
     auto& s = proc.apvts;
     power.attach (s, lvlOn);
     power.setTooltip ("Leveler: slowly rides the voice toward Target before the compressor, so someone who turns away "
-                      "or leans in stays at a steady level. It only moves while they talk and holds between phrases.");
+                      "or leans in stays at a steady level. It only moves while they talk and holds between phrases. "
+                      "When feedback is detected it stops turning up for 4 s (HOLD), so it can't feed a ring.");
     addAndMakeVisible (meter);
     target.attach (s, lvlTarget); range.attach (s, lvlRange);
     target.slider.setTooltip ("Level the voice is ridden toward (average loudness, dBFS RMS). Measured over ~0.3 s including the small gaps between words, so it reads well below the peaks: about -28 suits healthy -18 to -6 dB peaks. Set it where the voice sits when it sounds right.");

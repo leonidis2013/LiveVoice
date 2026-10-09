@@ -44,7 +44,7 @@ namespace
 
         void allModulesOff()
         {
-            set (fbOn, 0); set (eqOn, 0); set (dsOn, 0); set (pseOn, 0); set (compOn, 0);
+            set (hpfOn, 0); set (fbOn, 0); set (eqOn, 0); set (dsOn, 0); set (pseOn, 0); set (compOn, 0);
         }
 
         // Runs `input(n)` through the plugin; returns the output.
@@ -382,15 +382,13 @@ static void testDynamicEq()
     std::cout << "  bell 2 kHz +6 dB Q2 at 2.5 kHz: measured " << juce::String (measured, 2) << " dB, drawn " << juce::String (c.magnitudeDb (2500.0, fs), 2) << " dB" << std::endl;
     check (std::abs (measured - c.magnitudeDb (2500.0, fs)) < 0.2, "drawn EQ curve matches the audio");
 
-    // high-pass slopes, one octave below a 200 Hz corner (Butterworth: -10log10(1 + 4^n))
-    juce::String slopes ("  HP at 200 Hz, level at 100 Hz:");
+    // high-pass module slopes, one octave below a 200 Hz corner (Butterworth: -10log10(1 + 4^n))
+    juce::String slopes ("  HPF at 200 Hz, level at 100 Hz:");
     bool slopesOk = true;
-    for (int choice = 2; choice <= 7; ++choice)
+    for (int idx = 0; idx <= 5; ++idx)
     {
-        const int dbOct = params::slopeDbPerOct[choice - 2];
-        Harness hs; hs.allModulesOff(); hs.set (eqOn, 1);
-        for (int b = 1; b < numEqBands; ++b) hs.set (bOn (b), 0);
-        hs.set (bOn (0), 1); hs.set (bType (0), (float) choice); hs.set (bFreq (0), 200.0f); hs.set (bQ (0), 0.71f);
+        const int dbOct = dsp::HighPass::slopes[idx];
+        Harness hs; hs.allModulesOff(); hs.set (hpfOn, 1); hs.set (hpfFreq, 200.0f); hs.set (hpfSlope, (float) idx);
         const double got = sineChange (hs, 100.0, -6.0f, 0.6);
         const double order = dbOct / 6.0;
         const double expected = -10.0 * std::log10 (1.0 + std::pow (4.0, order));
@@ -1033,6 +1031,92 @@ static void testLevelTone()
     }
 }
 
+static void testHighPassModule()
+{
+    std::cout << "\nHigh-pass filter module (first in the chain)" << std::endl;
+    {
+        Harness h; h.allModulesOff(); h.set (hpfOn, 1); h.set (hpfFreq, 80.0f); h.set (hpfSlope, 3.0f);
+        const double at40 = sineChange (h, 40.0, -12.0f, 1.0);
+        Harness h2; h2.allModulesOff(); h2.set (hpfOn, 1); h2.set (hpfFreq, 80.0f); h2.set (hpfSlope, 3.0f);
+        const double at300 = sineChange (h2, 300.0, -12.0f, 1.0);
+        std::cout << "  80 Hz / 24 dB/oct with the EQ off: 40 Hz " << juce::String (at40, 1) << " dB, 300 Hz " << juce::String (at300, 2) << " dB" << std::endl;
+        check (at40 < -20.0 && std::abs (at300) < 0.3, "HPF cuts rumble on its own (EQ off) and leaves the voice alone");
+    }
+    {
+        // the PSE key must not open on rumble: 40 Hz thump at -20 dBFS, PSE threshold -45
+        auto keyWith = [] (bool hpf)
+        {
+            Harness h; h.allModulesOff(); h.set (pseOn, 1); h.set (pseThr, -45.0f); h.set (pseScHp, 20.0f);
+            h.set (hpfOn, hpf ? 1.0f : 0.0f); h.set (hpfFreq, 100.0f); h.set (hpfSlope, 3.0f);
+            h.run ([] (int64_t n) { return 0.1f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 40.0 * (double) n / fs); }, 1.0);
+            return h.p.pse.getKeyLevelDb();
+        };
+        const float off = keyWith (false), on = keyWith (true);
+        std::cout << "  PSE key level on 40 Hz rumble: " << juce::String (off, 1) << " dB without the HPF, " << juce::String (on, 1) << " dB with it" << std::endl;
+        check (on < off - 15.0f, "HPF sits before the PSE (rumble no longer opens it)");
+    }
+    {
+        // a preset saved before 0.7.0: HPF on band 1 (HP 18 dB/oct at 110 Hz)
+        Harness h;
+        h.p.presets.applyValues ({ { bType (0), 4.0f }, { bFreq (0), 110.0f }, { bOn (0), 1.0f } });
+        auto v = [&h] (const juce::String& id) { return h.p.apvts.getRawParameterValue (id)->load(); };
+        std::cout << "  old preset (band 1 = HP18 at 110 Hz) loads as: HPF " << (v (hpfOn) > 0.5f ? "on" : "off") << " "
+                  << juce::String (v (hpfFreq), 0) << " Hz slope idx " << (int) v (hpfSlope) << ", band 1 type " << (int) v (bType (0)) << std::endl;
+        check (v (hpfOn) > 0.5f && std::abs (v (hpfFreq) - 110.0f) < 0.5f && (int) v (hpfSlope) == 2 && (int) v (bType (0)) == 1,
+               "old presets move their band-1 high-pass to the HPF module");
+        Harness h2;
+        h2.p.presets.applyValues ({ { bType (0), 0.0f }, { bFreq (0), 300.0f } });
+        check (h2.p.apvts.getRawParameterValue (hpfOn)->load() < 0.5f, "old presets without a high-pass keep it off (sound unchanged)");
+    }
+    {
+        // a session saved before 0.7.0
+        Harness h;
+        juce::MemoryBlock mb;
+        h.p.getStateInformation (mb);
+        auto xml = juce::AudioProcessor::getXmlFromBinary (mb.getData(), (int) mb.getSize());
+        for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+        {
+            const auto id = e->getStringAttribute ("id");
+            if (id == bType (0)) e->setAttribute ("value", 5.0);
+            if (id == bFreq (0)) e->setAttribute ("value", 95.0);
+        }
+        for (auto* e = xml->getChildByAttribute ("id", hpfOn); e != nullptr; e = xml->getChildByAttribute ("id", hpfOn)) xml->removeChildElement (e, true);
+        for (auto* e = xml->getChildByAttribute ("id", hpfFreq); e != nullptr; e = xml->getChildByAttribute ("id", hpfFreq)) xml->removeChildElement (e, true);
+        for (auto* e = xml->getChildByAttribute ("id", hpfSlope); e != nullptr; e = xml->getChildByAttribute ("id", hpfSlope)) xml->removeChildElement (e, true);
+        juce::MemoryBlock old;
+        juce::AudioProcessor::copyXmlToBinary (*xml, old);
+        Harness h2;
+        h2.p.setStateInformation (old.getData(), (int) old.getSize());
+        auto v = [&h2] (const juce::String& id) { return h2.p.apvts.getRawParameterValue (id)->load(); };
+        check (v (hpfOn) > 0.5f && std::abs (v (hpfFreq) - 95.0f) < 0.5f && (int) v (hpfSlope) == 3 && (int) v (bType (0)) == 1,
+               "old sessions move their band-1 high-pass to the HPF module");
+    }
+    {
+        // leveler: after a feedback detection it may not turn up
+        dsp::AutoLeveler lv; lv.prepare (fs, 1);
+        dsp::AutoLeveler::Settings st; st.on = true; st.targetDb = -20.0f; st.rangeDb = 6.0f; lv.setSettings (st);
+        juce::AudioBuffer<float> b (1, blockSize);
+        auto run = [&] (double sec)
+        {
+            for (int64_t i = 0; i < (int64_t) (sec * fs); i += blockSize)
+            {
+                for (int k = 0; k < blockSize; ++k) b.setSample (0, k, 0.03f * (float) std::sin (0.05 * (double) (i + k)));   // ~ -33 dB: wants +6
+                lv.process (b, blockSize);
+            }
+        };
+        run (1.0);
+        const float before = lv.getGainDb();
+        lv.holdBoost (4.0);
+        run (3.0);
+        const float during = lv.getGainDb();
+        run (6.0);
+        const float after = lv.getGainDb();
+        std::cout << "  leveler gain: " << juce::String (before, 1) << " dB, 3 s after a ring " << juce::String (during, 1)
+                  << " dB, later " << juce::String (after, 1) << " dB" << std::endl;
+        check (std::abs (during - before) < 0.1f && after > before + 1.0f, "leveler stops turning up while feedback is being caught, then resumes");
+    }
+}
+
 static int profile()
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -1058,7 +1142,7 @@ static int profile()
     timeIt ("PSE only", [] (Harness& h) { h.allModulesOff(); h.set (pseOn, 1); });
     timeIt ("feedback (24 notches active)", [] (Harness& h) { h.allModulesOff(); h.set (fbOn, 1);
         for (int i = 0; i < 24; ++i) { dsp::FeedbackSuppressor::Command c; c.type = dsp::FeedbackSuppressor::Command::Type::setFixed; c.freq = 300.0f + 300.0f * i; c.depthDb = -9.0f; h.p.sendNotchCommand (c); } });
-    timeIt ("dynamic EQ, 6 bands dynamic, HP48", [] (Harness& h) { h.allModulesOff(); h.set (eqOn, 1); h.set (bType (0), 7.0f);
+    timeIt ("dynamic EQ, 6 bands dynamic, HP48", [] (Harness& h) { h.allModulesOff(); h.set (eqOn, 1); h.set (hpfOn, 1); h.set (hpfSlope, 5.0f);
         for (int b = 0; b < 6; ++b) { h.set (bOn (b), 1); h.set (bDyn (b), b > 0 ? 1.0f : 0.0f); } });
     timeIt ("de-esser (relative)", [] (Harness& h) { h.allModulesOff(); h.set (dsOn, 1); h.set (dsRelative, 1); });
     timeIt ("compressor", [] (Harness& h) { h.allModulesOff(); h.set (compOn, 1); });
@@ -1190,6 +1274,7 @@ int main (int argc, char** argv)
     testRelativeDeEss();
     testDeEssQualityAndLevels();
     testLevelTone();
+    testHighPassModule();
     testClosedLoop();
     testFalsePositives();
     testLearnAndState();
