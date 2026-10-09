@@ -71,4 +71,12 @@ jobs:
       - name: Build tests
         run: cmake --build build --config Release --target LiveVoiceTests --parallel
       - name: Run tests
-        run: ./build/Tests/LiveVoiceTests_artefacts/Release/LiveVoiceTests
+        shell: bash
+        run: |
+          set +e
+          ./build/Tests/LiveVoiceTests_artefacts/Release/LiveVoiceTests | tee test-output.txt
+          status=${PIPESTATUS[0]}
+          # failing checks (with the measurement line above each) become annotations on the run page
+          grep -B2 "FAIL" test-output.txt | sed 's/^/::error::/' || true
+          tail -1 test-output.txt | sed 's/^/::notice::/'
+          exit $status
