@@ -122,7 +122,7 @@ Copy `build/LiveVoice_artefacts/Release/VST3/LiveVoice.vst3` to `~/Library/Audio
 A locally built plugin runs on your own Mac; to give it to other Macs it needs to be code-signed/notarized (or the receiving user must allow it in *Privacy & Security*).
 
 **Building on GitHub (no compiler needed).** Push this folder to a GitHub repository. The included workflow (`.github/workflows/build.yml`) then builds Release VST3s for Windows and macOS (universal) on every push, and runs the offline tests on macOS.
-- Every push: open the **Actions** tab → the latest run → **Artifacts** → download `LiveVoice-<version>-macOS-VST3` (or Windows), unzip, and copy `LiveVoice.vst3` into your VST3 folder.
+- Every push to `main` replaces the **Latest build** release (right-hand side of the project page, under *Releases*) with `LiveVoice-macOS-VST3.zip` and `LiveVoice-Windows-VST3.zip`. This link always downloads the newest Mac build: `https://github.com/leonidis2013/LiveVoice/releases/latest/download/LiveVoice-macOS-VST3.zip`. Unzip it and copy `LiveVoice.vst3` into your VST3 folder.
 - Push a tag such as `v0.7.0` and the same zips are attached to a **GitHub Release**, so every version you've shipped stays downloadable.
 - The version in the zip name comes from `project(LiveVoice VERSION …)` in `CMakeLists.txt`, the same number shown under the logo.
 - GitHub's Mac builds are not notarized: the first time, macOS may block the plugin; allow it in System Settings → Privacy & Security, or run `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/LiveVoice.vst3`.

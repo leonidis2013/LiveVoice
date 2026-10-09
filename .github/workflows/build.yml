@@ -1,8 +1,11 @@
 name: Build LiveVoice VST3
 
 # Builds the plugin for Windows and macOS on every push.
-#   - Every run:  Actions tab > the run > Artifacts > LiveVoice-<version>-<OS>-VST3
-#   - Push a tag like v0.7.0:  also creates a GitHub Release with both zips attached
+#   - Every push to main: the "Latest build" release on the project's front page is replaced,
+#     with LiveVoice-macOS-VST3.zip and LiveVoice-Windows-VST3.zip attached. Always-newest links:
+#     https://github.com/<owner>/<repo>/releases/latest/download/LiveVoice-macOS-VST3.zip
+#   - Push a tag like v0.7.0: also keeps a permanent release for that version
+#   - Every run: Actions tab > the run > Artifacts (same files)
 on:
   push:
     branches: ["**"]
@@ -46,20 +49,60 @@ jobs:
         shell: bash
         run: |
           cd build/LiveVoice_artefacts/Release/VST3
-          cmake -E tar cf "$GITHUB_WORKSPACE/LiveVoice-${{ steps.version.outputs.version }}-${{ matrix.name }}-VST3.zip" --format=zip LiveVoice.vst3
+          cmake -E tar cf "$GITHUB_WORKSPACE/LiveVoice-${{ matrix.name }}-VST3.zip" --format=zip LiveVoice.vst3
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: LiveVoice-${{ steps.version.outputs.version }}-${{ matrix.name }}-VST3
-          path: LiveVoice-${{ steps.version.outputs.version }}-${{ matrix.name }}-VST3.zip
+          path: LiveVoice-${{ matrix.name }}-VST3.zip
           if-no-files-found: error
 
-      - name: Attach to GitHub Release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+  publish:
+    name: Publish release
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
-          files: LiveVoice-${{ steps.version.outputs.version }}-${{ matrix.name }}-VST3.zip
+          path: dist
+          merge-multiple: true
+
+      - name: Release notes
+        shell: bash
+        run: |
+          v=$(sed -n 's/^project(LiveVoice VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          {
+            echo "**LiveVoice $v** - built $(date -u '+%Y-%m-%d %H:%M UTC') from \`${GITHUB_SHA::7}\`: $(git log -1 --pretty=%s)"
+            echo
+            echo "**Install (Mac):** download LiveVoice-macOS-VST3.zip, unzip it, and copy LiveVoice.vst3 to ~/Library/Audio/Plug-Ins/VST3/ (replace the old one). If macOS blocks it, run once in Terminal:"
+            echo '`xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/LiveVoice.vst3`'
+            echo
+            echo "**Install (Windows):** unzip LiveVoice-Windows-VST3.zip and copy LiveVoice.vst3 to C:\\Program Files\\Common Files\\VST3\\"
+            echo
+            echo "Then rescan plug-ins in LiveProfessor; the version under the LiveVoice logo should read v$v."
+          } > notes.md
+
+      - name: Replace the "Latest build" release (main)
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          gh release delete latest-build --cleanup-tag --yes || true
+          gh release create latest-build dist/*.zip --target "$GITHUB_SHA" \
+            --title "Latest build - LiveVoice $VERSION" --notes-file notes.md --latest
+
+      - name: Permanent release for a version tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --verify-tag \
+            --title "LiveVoice $GITHUB_REF_NAME" --notes-file notes.md --latest=false
 
   tests:
     name: Offline tests (macOS)
