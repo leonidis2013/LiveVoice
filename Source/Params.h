@@ -293,10 +293,12 @@ namespace params
         if (type == nullptr) return;
         if (*type >= 2.0f)
         {
+            // copy what we need first: emplace_back below may move the list and invalidate pointers into it
             const int slopeIndex = juce::jlimit (0, 5, juce::roundToInt (*type) - 2);
             const float* f = find (bFreq (0));
+            const float oldFreq = f != nullptr ? *f : 80.0f;
             values.emplace_back (hpfOn, 1.0f);
-            values.emplace_back (hpfFreq, juce::jlimit (20.0f, 400.0f, f != nullptr ? *f : 80.0f));
+            values.emplace_back (hpfFreq, juce::jlimit (20.0f, 400.0f, oldFreq));
             values.emplace_back (hpfSlope, (float) slopeIndex);
             type = find (bType (0));
             *type = 1.0f;   // low shelf
