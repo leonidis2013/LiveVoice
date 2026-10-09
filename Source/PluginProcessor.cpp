@@ -29,6 +29,8 @@ LiveVoiceProcessor::LiveVoiceProcessor()
     p.compOn = raw (compOn); p.compThr = raw (compThr); p.compRatio = raw (compRatio); p.compKnee = raw (compKnee);
     p.compAttack = raw (compAttack); p.compRelease = raw (compRelease); p.compAuto = raw (compAuto); p.compMakeup = raw (compMakeup);
     p.compMix = raw (compMix); p.compScHp = raw (compScHp); p.compAutoGain = raw (compAutoGain);
+    p.lvlOn = raw (lvlOn); p.lvlTarget = raw (lvlTarget); p.lvlRange = raw (lvlRange); p.lvlSpeed = raw (lvlSpeed);
+    p.proxOn = raw (proxOn); p.proxAmount = raw (proxAmount); p.warmth = raw (warmth);
 }
 
 LiveVoiceProcessor::~LiveVoiceProcessor()
@@ -61,6 +63,9 @@ void LiveVoiceProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     deEsser.prepare (sampleRate, nCh);
     pse.prepare (sampleRate, nCh);
     comp.prepare (sampleRate, nCh);
+    proximity.prepare (sampleRate, nCh);
+    leveler.prepare (sampleRate, nCh);
+    warmthFx.prepare (sampleRate, nCh);
     detector.prepare (sampleRate);
 
     monoScratch.assign ((size_t) std::max (512, samplesPerBlock), 0.0f);
@@ -146,6 +151,13 @@ void LiveVoiceProcessor::updateSettings()
     cs.makeupDb = p.compMakeup->load(); cs.mix = p.compMix->load() * 0.01f; cs.scHpHz = p.compScHp->load();
     cs.autoGain = p.compAutoGain->load() > 0.5f;
     comp.setSettings (cs);
+
+    proximity.setSettings ({ p.proxOn->load() > 0.5f, p.proxAmount->load() });
+    dsp::AutoLeveler::Settings ls;
+    ls.on = p.lvlOn->load() > 0.5f; ls.targetDb = p.lvlTarget->load(); ls.rangeDb = p.lvlRange->load();
+    ls.speed = juce::jlimit (0, 2, (int) p.lvlSpeed->load());
+    leveler.setSettings (ls);
+    warmthFx.setAmount (p.warmth->load());
 }
 
 bool LiveVoiceProcessor::isMonitorBusActive() const
@@ -273,6 +285,9 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     else
         deEsser.process (main, numSamples);
 
+    proximity.process (main, numSamples);
+    leveler.process (main, numSamples);
+    warmthFx.process (main, numSamples);
     comp.process (main, numSamples);
 
     // detector listens to what is actually going to the speakers (pre-solo, pre-output trim)

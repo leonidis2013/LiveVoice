@@ -9,6 +9,7 @@
 #include "dsp/FeedbackDetector.h"
 #include "dsp/PrimarySourceExpander.h"
 #include "dsp/VocalCompressor.h"
+#include "dsp/LevelTone.h"
 
 // Lock-free ring the audio thread writes and the UI reads for the RTA.
 class ScopeTap
@@ -77,6 +78,9 @@ public:
     dsp::DeEsser deEsser;
     dsp::PrimarySourceExpander pse;
     dsp::VocalCompressor comp;
+    dsp::ProximityComp proximity;
+    dsp::AutoLeveler leveler;
+    dsp::Warmth warmthFx;
 
     // Solo / listen. Never saved or automated, so a session can't come back soloed.
     static constexpr int soloNone = -1, soloDeEss = 100;   // 0..5 = EQ band
@@ -150,6 +154,8 @@ private:
         std::atomic<float>* compOn; std::atomic<float>* compThr; std::atomic<float>* compRatio; std::atomic<float>* compKnee;
         std::atomic<float>* compAttack; std::atomic<float>* compRelease; std::atomic<float>* compAuto; std::atomic<float>* compMakeup;
         std::atomic<float>* compMix; std::atomic<float>* compScHp; std::atomic<float>* compAutoGain;
+        std::atomic<float>* lvlOn; std::atomic<float>* lvlTarget; std::atomic<float>* lvlRange; std::atomic<float>* lvlSpeed;
+        std::atomic<float>* proxOn; std::atomic<float>* proxAmount; std::atomic<float>* warmth;
     } p {};
 
     dsp::SvfCoeffs soloCoeffs;

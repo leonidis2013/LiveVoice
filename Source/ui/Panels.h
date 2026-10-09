@@ -284,6 +284,38 @@ private:
          hold { "Hold", theme::pse }, release { "Release", theme::pse };
 };
 
+// Leveler gain (bipolar, centre = 0 dB) with the number beside it.
+class LevelerMeter : public juce::Component
+{
+public:
+    explicit LevelerMeter (LiveVoiceProcessor& p) : proc (p) {}
+    void update();
+    void paint (juce::Graphics&) override;
+private:
+    LiveVoiceProcessor& proc;
+    float gain = 0.0f, painted = 1000.0f;
+    bool on = false;
+};
+
+// Leveler (power button) plus TONE: proximity compensation and warmth.
+class LevelTonePanel : public ModulePanel
+{
+public:
+    explicit LevelTonePanel (LiveVoiceProcessor& p);
+    void resized() override;
+    void paint (juce::Graphics&) override;
+    void update();
+private:
+    LiveVoiceProcessor& proc;
+    LevelerMeter meter { proc };
+    Knob target { "Target", theme::output }, range { "Range", theme::output };
+    Combo speed;
+    juce::Label speedLabel, proxValue;
+    ToggleBtn proximity { "PROXIMITY", theme::output };
+    Knob proxAmount { "Max Cut", theme::output }, warmth { "Warmth", theme::output };
+    int toneY = 0;
+};
+
 class CompPanel : public ModulePanel
 {
 public:

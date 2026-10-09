@@ -7,7 +7,7 @@ LiveVoiceEditor::LiveVoiceEditor (LiveVoiceProcessor& p) : AudioProcessorEditor 
     for (auto* c : { (juce::Component*) &header, (juce::Component*) &rta, (juce::Component*) &ioMeters,
                      (juce::Component*) &deEssHistory, (juce::Component*) &compHistory, (juce::Component*) &compGraph,
                      (juce::Component*) &psePanel, (juce::Component*) &feedbackPanel, (juce::Component*) &eqPanel,
-                     (juce::Component*) &deEssPanel, (juce::Component*) &compPanel })
+                     (juce::Component*) &deEssPanel, (juce::Component*) &levelPanel, (juce::Component*) &compPanel })
         canvas.addAndMakeVisible (c);
     canvas.addChildComponent (settings);   // overlay, on top of everything
     layoutCanvas();
@@ -90,17 +90,17 @@ void LiveVoiceEditor::layoutCanvas()
     r.removeFromRight (8);
     rta.setBounds (r);
 
-    // signal flow, left to right: PSE > Feedback > Dynamic EQ > De-esser > Compressor
-    constexpr int gap = 12;
-    const int w = bottom.getWidth() - 4 * gap;
-    const float share[] { 0.150f, 0.205f, 0.300f, 0.160f, 0.185f };
-    juce::Component* panels[] { &psePanel, &feedbackPanel, &eqPanel, &deEssPanel, &compPanel };
+    // signal flow, left to right: PSE > Feedback > Dynamic EQ > De-esser > Leveler/tone > Compressor
+    constexpr int gap = 12, numPanels = 6;
+    const int w = bottom.getWidth() - (numPanels - 1) * gap;
+    const float share[] { 0.135f, 0.165f, 0.26f, 0.15f, 0.13f, 0.16f };
+    juce::Component* panels[] { &psePanel, &feedbackPanel, &eqPanel, &deEssPanel, &levelPanel, &compPanel };
     canvas.gaps.clear();
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < numPanels; ++i)
     {
-        const int pw = i == 4 ? bottom.getWidth() : juce::roundToInt ((float) w * share[i]);
+        const int pw = i == numPanels - 1 ? bottom.getWidth() : juce::roundToInt ((float) w * share[i]);
         panels[i]->setBounds (bottom.removeFromLeft (pw));
-        if (i < 4) canvas.gaps.push_back (bottom.removeFromLeft (gap));
+        if (i < numPanels - 1) canvas.gaps.push_back (bottom.removeFromLeft (gap));
     }
 }
 
@@ -180,6 +180,7 @@ void LiveVoiceEditor::timerCallback()
         feedbackPanel.update();
         eqPanel.update();
         deEssPanel.update();
+        levelPanel.update();
         proc.pollFeedbackLog();
         if (settings.isVisible()) settings.update();
     }

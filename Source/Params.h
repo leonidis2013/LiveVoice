@@ -121,6 +121,15 @@ namespace params
     inline const juce::String compScHp    { "compScHp" };
     inline const juce::String compAutoGain { "compAutoGain" };
 
+    // Leveler + tone (between the de-esser and the compressor)
+    inline const juce::String lvlOn      { "lvlOn" };
+    inline const juce::String lvlTarget  { "lvlTarget" };
+    inline const juce::String lvlRange   { "lvlRange" };
+    inline const juce::String lvlSpeed   { "lvlSpeed" };
+    inline const juce::String proxOn     { "proxOn" };
+    inline const juce::String proxAmount { "proxAmount" };
+    inline const juce::String warmth     { "warmth" };
+
     // -----------------------------------------------------------------------
     inline juce::NormalisableRange<float> freqRange (float lo, float hi)
     {
@@ -249,6 +258,15 @@ namespace params
         addF (compMix,     "Comp Mix", { 0.0f, 100.0f, 1.0f }, 100.0f, pct);
         addF (compScHp,    "Comp Sidechain HP", freqRange (20.0f, 300.0f), 100.0f, hz);
         addB (compAutoGain, "Comp Auto Gain", false);
+
+        // Leveler + tone
+        addB (lvlOn,      "Leveler On", false);
+        addF (lvlTarget,  "Leveler Target", { -45.0f, -12.0f, 0.1f }, -28.0f, db);
+        addF (lvlRange,   "Leveler Range", { 0.0f, 12.0f, 0.1f }, 6.0f, db);
+        addC (lvlSpeed,   "Leveler Speed", { "Slow", "Medium", "Fast" }, 1);
+        addB (proxOn,     "Proximity Comp On", false);
+        addF (proxAmount, "Proximity Max Cut", { 0.0f, 12.0f, 0.1f }, 6.0f, db);
+        addF (warmth,     "Warmth", { 0.0f, 100.0f, 1.0f }, 0.0f, pct);
 
         return layout;
     }

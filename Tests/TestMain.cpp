@@ -226,6 +226,7 @@ static void testLatency()
 
     Harness h2;   // defaults: HP filter, de-esser on + everything else switched on
     h2.set (fbOn, 1); h2.set (pseOn, 1); h2.set (pseThr, -80.0f); h2.set (compOn, 1); h2.set (dsRelative, 1);
+    h2.set (lvlOn, 1); h2.set (proxOn, 1); h2.set (warmth, 50.0f);
     auto out2 = h2.run ([] (int64_t n) { return n == 0 ? 0.5f : 0.0f; }, 0.05);
     size_t peakIdx = 0;
     for (size_t i = 0; i < out2.size(); ++i) if (std::abs (out2[i]) > std::abs (out2[peakIdx])) peakIdx = i;
@@ -953,6 +954,85 @@ static void testDeEssQualityAndLevels()
     }
 }
 
+static void testLevelTone()
+{
+    std::cout << "\nLeveler, proximity compensation, warmth" << std::endl;
+    // leveler: a talker who alternates between soft and loud (16 dB apart) every 6 s
+    {
+        auto render = [] (bool on)
+        {
+            Harness h; h.allModulesOff(); h.set (lvlOn, on ? 1.0f : 0.0f); h.set (lvlTarget, -36.0f); h.set (lvlRange, 6.0f);
+            Voice soft (120.0, false, -26.0f), loud (120.0, false, -10.0f);
+            return h.run ([&] (int64_t n) { return ((n / (int64_t) (6 * fs)) % 2 == 0) ? soft (n) : loud (n); }, 24.0);
+        };
+        const auto dry = render (false), wet = render (true);
+        const double inSpread = rmsDb (dry, 21.0, 24.0) - rmsDb (dry, 15.0, 18.0);
+        const double outSpread = rmsDb (wet, 21.0, 24.0) - rmsDb (wet, 15.0, 18.0);
+        std::cout << "  soft/loud talker: level difference " << juce::String (inSpread, 1) << " dB in, " << juce::String (outSpread, 1)
+                  << " dB with the leveler (range 6)" << std::endl;
+        check (outSpread < inSpread - 8.0, "leveler evens out a soft and a loud talker");
+    }
+    {
+        Harness h; h.allModulesOff(); h.set (lvlOn, 1); h.set (lvlTarget, -36.0f); h.set (lvlRange, 6.0f);
+        Voice v (120.0, false, -26.0f);
+        h.run ([&v] (int64_t n) { return v (n); }, 8.0);
+        const float before = h.p.leveler.getGainDb();
+        std::mt19937 rng (5); std::normal_distribution<float> nz (0.0f, 1.0f);
+        h.run ([&] (int64_t) { return 3.0e-4f * nz (rng); }, 6.0);   // -70 dBFS room noise between phrases
+        const float after = h.p.leveler.getGainDb();
+        std::cout << "  leveler gain while talking +" << juce::String (before, 1) << " dB, after 6 s of silence +" << juce::String (after, 1) << " dB" << std::endl;
+        check (before > 4.0f && std::abs (after - before) < 0.5f, "leveler holds between phrases (never raises the room)");
+    }
+    // proximity: 12 s at normal distance, then 10 s close (low end +9 dB below 200 Hz)
+    {
+        auto render = [] (bool on)
+        {
+            Harness h; h.allModulesOff(); h.set (proxOn, on ? 1.0f : 0.0f); h.set (proxAmount, 9.0f);
+            Voice v (120.0, false, -18.0f);
+            dsp::SvfCoeffs close; close.lowShelf (200.0, 0.707, 9.0, fs);
+            dsp::SvfState st;
+            return h.run ([&] (int64_t n)
+            {
+                const float x = v (n);
+                const float y = st.process (x, close);
+                return n < (int64_t) (12 * fs) ? x : y;
+            }, 22.0);
+        };
+        const auto dry = render (false), wet = render (true);
+        auto lf = [] (const std::vector<float>& x, double a, double b)
+        {
+            return bandEnergyDb (x, 80.0, 250.0, [a, b] (double t) { return t >= a && t < b; });
+        };
+        const double normal = lf (wet, 8.0, 12.0) - lf (dry, 8.0, 12.0);
+        const double close = lf (wet, 17.0, 22.0) - lf (dry, 17.0, 22.0);
+        std::cout << "  proximity: low end at normal distance " << juce::String (normal, 1) << " dB, when close "
+                  << juce::String (close, 1) << " dB" << std::endl;
+        check (std::abs (normal) < 1.0, "proximity: leaves the voice alone at its normal distance");
+        check (close < -4.0, "proximity: takes the boom back out when the talker gets close");
+    }
+    // warmth
+    {
+        auto sine = [] (double f, float db) { const float a = dsp::dbToGain (db); return [f, a] (int64_t n) { return a * (float) std::sin (2.0 * juce::MathConstants<double>::pi * f * (double) n / fs); }; };
+        Harness a; a.allModulesOff();
+        Harness b; b.allModulesOff(); b.set (warmth, 0.0f);
+        Voice v1 (120.0, false, -18.0f), v2 (120.0, false, -18.0f);
+        const auto x1 = a.run ([&v1] (int64_t n) { return v1 (n); }, 1.0), x2 = b.run ([&v2] (int64_t n) { return v2 (n); }, 1.0);
+        check (x1 == x2, "warmth at 0 % is an exact bypass");
+
+        Harness w; w.allModulesOff(); w.set (warmth, 100.0f);
+        const auto o = w.run (sine (200.0, -20.0f), 1.0);
+        const double fund = toneDb (o, o.size() - 9600, o.size(), 200.0);
+        const double h2 = toneDb (o, o.size() - 9600, o.size(), 400.0) - fund, h3 = toneDb (o, o.size() - 9600, o.size(), 600.0) - fund;
+        Harness w2; w2.allModulesOff(); w2.set (warmth, 100.0f);
+        const auto hi = w2.run (sine (7000.0, -20.0f), 1.0);
+        const double hiChange = toneDb (hi, hi.size() - 9600, hi.size(), 7000.0) + 20.0;
+        std::cout << "  warmth 100 % on 200 Hz: 2nd harmonic " << juce::String (h2, 1) << " dB, 3rd " << juce::String (h3, 1)
+                  << " dB;  7 kHz changed by " << juce::String (hiChange, 2) << " dB" << std::endl;
+        check (h2 > -30.0 && h2 < -14.0 && h3 < h2, "warmth adds a subtle 2nd harmonic (and less 3rd)");
+        check (std::abs (hiChange) < 0.1, "warmth leaves the highs alone");
+    }
+}
+
 static int profile()
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -1048,6 +1128,7 @@ static int snapshot (const juce::String& path, bool light, bool toggle)
     h.set (pseOn, 1); h.set (pseThr, -50.0f);
     h.set (bDyn (2), 1); h.set (bThr (2), -40.0f); h.set (bRange (2), -6.0f);
     h.set (compThr, -30.0f);
+    h.set (lvlOn, 1); h.set (lvlTarget, -36.0f); h.set (proxOn, 1); h.set (warmth, 30.0f);
     h.p.selectedBand = 2;
     Voice v (120.0, false, -20.0f);
     Room room (1.2);
@@ -1108,6 +1189,7 @@ int main (int argc, char** argv)
     testCompressor();
     testRelativeDeEss();
     testDeEssQualityAndLevels();
+    testLevelTone();
     testClosedLoop();
     testFalsePositives();
     testLearnAndState();

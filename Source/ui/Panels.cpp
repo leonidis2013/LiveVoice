@@ -1356,6 +1356,129 @@ void PsePanel::update()
     keyMeter.update();
 }
 
+// ================================================================ leveler + tone
+void LevelerMeter::update()
+{
+    const bool o = raw (proc, lvlOn) > 0.5f;
+    const float gdb = proc.leveler.getGainDb();
+    if (o != on || std::abs (gdb - painted) > 0.05f)
+    {
+        on = o; gain = gdb; painted = gdb;
+        repaint();
+    }
+}
+
+void LevelerMeter::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat();
+    auto top = r.removeFromTop (14.0f);
+    g.setFont (theme::font (9.5f, true));
+    g.setColour (theme::textDim);
+    g.drawText ("RIDING", top, juce::Justification::centredLeft);
+    g.setFont (theme::font (11.5f, true));
+    g.setColour (on ? theme::output : theme::textFaint);
+    g.drawText (on ? (gain >= 0.05f ? "+" : "") + juce::String (gain, 1) + " dB" : "off", top, juce::Justification::centredRight);
+
+    auto bar = r.removeFromTop (10.0f).reduced (0.0f, 1.0f);
+    constexpr float span = 12.0f;
+    g.setColour (theme::bg);
+    g.fillRoundedRectangle (bar, 3.0f);
+    const float cx = bar.getCentreX();
+    if (on)
+    {
+        const float x = juce::jmap (juce::jlimit (-span, span, gain), -span, span, bar.getX(), bar.getRight());
+        g.setColour (theme::output);
+        g.fillRect (juce::Rectangle<float> (std::min (cx, x), bar.getY(), std::abs (x - cx), bar.getHeight()));
+    }
+    g.setColour (theme::text.withAlpha (0.6f));
+    g.fillRect (cx - 0.5f, bar.getY() - 1.0f, 1.0f, bar.getHeight() + 2.0f);
+    g.setFont (theme::font (9.0f));
+    g.setColour (theme::textFaint);
+    g.drawText ("-12", r.withWidth (30.0f), juce::Justification::centredLeft);
+    g.drawText ("0", r.withSizeKeepingCentre (20.0f, r.getHeight()), juce::Justification::centred);
+    g.drawText ("+12", r.withTrimmedLeft (r.getWidth() - 30.0f), juce::Justification::centredRight);
+}
+
+LevelTonePanel::LevelTonePanel (LiveVoiceProcessor& p) : ModulePanel ("LEVELER", theme::output), proc (p)
+{
+    auto& s = proc.apvts;
+    power.attach (s, lvlOn);
+    power.setTooltip ("Leveler: slowly rides the voice toward Target before the compressor, so someone who turns away "
+                      "or leans in stays at a steady level. It only moves while they talk and holds between phrases.");
+    addAndMakeVisible (meter);
+    target.attach (s, lvlTarget); range.attach (s, lvlRange);
+    target.slider.setTooltip ("Level the voice is ridden toward (average loudness, dBFS RMS). Measured over ~0.3 s including the small gaps between words, so it reads well below the peaks: about -28 suits healthy -18 to -6 dB peaks. Set it where the voice sits when it sounds right.");
+    range.slider.setTooltip ("Most it will turn up or down. Every dB of boost also raises the feedback risk, so keep it modest.");
+    speed.attach (s, lvlSpeed, { "Slow", "Medium", "Fast" });
+    speed.setTooltip ("How quickly it follows: Slow ~4 s, Medium ~2 s, Fast ~1 s. Turning down is twice as quick as turning up.");
+    speedLabel.setText ("Speed", juce::dontSendNotification);
+    proximity.attach (s, proxOn);
+    proximity.setTooltip ("Proximity compensation: learns the voice's normal low-end balance while they talk, and turns the "
+                          "low end (250 Hz shelf) down when they get close to the mic and it booms. Max Cut limits it.");
+    proxAmount.attach (s, params::proxAmount);
+    warmth.attach (s, params::warmth);
+    warmth.slider.setTooltip ("Warmth: adds a little 2nd and 3rd harmonic to the low-mids only (80 Hz - 1.5 kHz) for thin voices. "
+                       "0 % = completely bypassed. Subtle by design.");
+    for (auto* l : { &speedLabel, &proxValue })
+    {
+        l->setFont (theme::font (11.0f));
+        l->setColour (juce::Label::textColourId, theme::textDim);
+        addAndMakeVisible (l);
+    }
+    proxValue.setJustificationType (juce::Justification::centredRight);
+    for (auto* c : { (juce::Component*) &target, (juce::Component*) &range, (juce::Component*) &speed,
+                     (juce::Component*) &proximity, (juce::Component*) &proxAmount, (juce::Component*) &warmth })
+        addAndMakeVisible (c);
+}
+
+void LevelTonePanel::resized()
+{
+    layoutHeader();
+    auto r = getContentBounds();
+    meter.setBounds (r.removeFromTop (34));
+    r.removeFromTop (8);
+    const int knobH = std::min (88, (r.getHeight() - 110) / 2);
+    const int kw = r.getWidth() / 2;
+    auto row = r.removeFromTop (knobH);
+    target.setBounds (row.removeFromLeft (kw)); range.setBounds (row);
+    r.removeFromTop (6);
+    row = r.removeFromTop (26);
+    speedLabel.setBounds (row.removeFromLeft (48));
+    speed.setBounds (row);
+    r.removeFromTop (12);
+    toneY = r.getY();
+    r.removeFromTop (22);
+    row = r.removeFromTop (26);
+    proximity.setBounds (row.removeFromLeft (row.getWidth() * 3 / 5).withTrimmedRight (4));
+    proxValue.setBounds (row);
+    r.removeFromTop (8);
+    row = r.removeFromTop (knobH);
+    proxAmount.setBounds (row.removeFromLeft (kw)); warmth.setBounds (row);
+}
+
+void LevelTonePanel::paint (juce::Graphics& g)
+{
+    ModulePanel::paint (g);
+    auto b = getContentBounds();
+    g.setColour (theme::border);
+    g.drawHorizontalLine (toneY, (float) b.getX(), (float) b.getRight());
+    g.setColour (theme::textFaint);
+    g.setFont (theme::font (11.0f, true));
+    g.drawText ("TONE", b.getX(), toneY + 4, b.getWidth(), 16, juce::Justification::centredLeft);
+}
+
+void LevelTonePanel::update()
+{
+    meter.update();
+    const bool on = raw (proc, proxOn) > 0.5f;
+    const float cut = proc.proximity.getCutDb();
+    proxValue.setText (on ? (cut > 0.05f ? "-" + juce::String (cut, 1) + " dB" : "0.0 dB") : "", juce::dontSendNotification);
+    proxValue.setColour (juce::Label::textColourId, on && cut > 0.5f ? theme::output : theme::textDim);
+    proxAmount.setEnabled (on);
+    const bool lv = raw (proc, lvlOn) > 0.5f;
+    target.setEnabled (lv); range.setEnabled (lv); speed.setEnabled (lv);
+}
+
 // ================================================================ compressor panel
 CompPanel::CompPanel (LiveVoiceProcessor& p) : ModulePanel ("COMPRESSOR", theme::comp), proc (p)
 {

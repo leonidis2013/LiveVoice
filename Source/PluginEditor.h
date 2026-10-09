@@ -65,6 +65,7 @@ private:
     FeedbackPanel feedbackPanel { proc };
     EqPanel eqPanel { proc };
     DeEssPanel deEssPanel { proc };
+    LevelTonePanel levelPanel { proc };
     CompPanel compPanel { proc };
     SettingsPanel settings { proc };
 
