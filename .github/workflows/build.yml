@@ -1,12 +1,21 @@
-name: Build VST3
+name: Build LiveVoice VST3
 
+# Builds the plugin for Windows and macOS on every push.
+#   - Every run:  Actions tab > the run > Artifacts > LiveVoice-<version>-<OS>-VST3
+#   - Push a tag like v0.7.0:  also creates a GitHub Release with both zips attached
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write   # needed to create Releases on tags
+
 jobs:
   build:
+    name: ${{ matrix.name }} VST3
     strategy:
       fail-fast: false
       matrix:
@@ -19,14 +28,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure
+      - name: Read version from CMakeLists.txt
+        id: version
+        shell: bash
+        run: |
+          v=$(sed -n 's/^project(LiveVoice VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building LiveVoice $v"
+
+      - name: Configure (Release)
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Upload VST3
+      - name: Zip the plugin
+        shell: bash
+        run: |
+          cd build/LiveVoice_artefacts/Release/VST3
+          cmake -E tar cf "$GITHUB_WORKSPACE/LiveVoice-${{ steps.version.outputs.version }}-${{ matrix.name }}-VST3.zip" --format=zip LiveVoice.vst3
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LiveVoice-${{ matrix.name }}-VST3
-          path: build/LiveVoice_artefacts/Release/VST3/LiveVoice.vst3
+          name: LiveVoice-${{ steps.version.outputs.version }}-${{ matrix.name }}-VST3
+          path: LiveVoice-${{ steps.version.outputs.version }}-${{ matrix.name }}-VST3.zip
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: LiveVoice-${{ steps.version.outputs.version }}-${{ matrix.name }}-VST3.zip
+
+  tests:
+    name: Offline tests (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure with tests
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLIVEVOICE_BUILD_TESTS=ON
+      - name: Build tests
+        run: cmake --build build --config Release --target LiveVoiceTests --parallel
+      - name: Run tests
+        run: ./build/Tests/LiveVoiceTests_artefacts/Release/LiveVoiceTests

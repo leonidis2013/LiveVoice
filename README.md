@@ -121,7 +121,11 @@ cmake --build build --config Release
 Copy `build/LiveVoice_artefacts/Release/VST3/LiveVoice.vst3` to `~/Library/Audio/Plug-Ins/VST3/`, **replacing** the old one (the build does not install itself). If LiveProfessor still shows an older version under the logo, it is loading an old copy: delete every LiveVoice.vst3 in `~/Library/Audio/Plug-Ins/VST3/` and `/Library/Audio/Plug-Ins/VST3/`, copy the new one in, and rescan plugins in LiveProfessor.
 A locally built plugin runs on your own Mac; to give it to other Macs it needs to be code-signed/notarized (or the receiving user must allow it in *Privacy & Security*).
 
-**No compiler handy?** Push this folder to a GitHub repository — the included workflow (`.github/workflows/build.yml`) builds Windows and macOS VST3s and attaches them to each run under *Actions → Artifacts*.
+**Building on GitHub (no compiler needed).** Push this folder to a GitHub repository. The included workflow (`.github/workflows/build.yml`) then builds Release VST3s for Windows and macOS (universal) on every push, and runs the offline tests on macOS.
+- Every push: open the **Actions** tab → the latest run → **Artifacts** → download `LiveVoice-<version>-macOS-VST3` (or Windows), unzip, and copy `LiveVoice.vst3` into your VST3 folder.
+- Push a tag such as `v0.7.0` and the same zips are attached to a **GitHub Release**, so every version you've shipped stays downloadable.
+- The version in the zip name comes from `project(LiveVoice VERSION …)` in `CMakeLists.txt`, the same number shown under the logo.
+- GitHub's Mac builds are not notarized: the first time, macOS may block the plugin; allow it in System Settings → Privacy & Security, or run `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/LiveVoice.vst3`.
 
 ### Tests
 ```
