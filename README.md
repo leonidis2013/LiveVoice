@@ -1,4 +1,4 @@
-# LiveVoice — zero-latency vocal processor (VST3)  ·  v0.4.1
+# LiveVoice — zero-latency vocal processor (VST3)  ·  v0.4.2
 
 A single VST3 plugin for live voice: pastor on a face mic, lectern speech, male and female vocals.
 Everything in the audio path is zero latency (the plugin reports 0 samples to the host).

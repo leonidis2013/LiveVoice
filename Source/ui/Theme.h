@@ -241,7 +241,7 @@ namespace theme
             g.drawRoundedRectangle (r, 5.0f, 1.0f);
         }
 
-        juce::Font getTextButtonFont (juce::TextButton&, int h) override { return font (std::min (13.0f, h * 0.48f), true); }
+        juce::Font getTextButtonFont (juce::TextButton&, int h) override { return font (std::min (13.0f, (float) h * 0.48f), true); }
 
         void drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, int, juce::ComboBox& box) override
         {

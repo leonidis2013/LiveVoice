@@ -321,8 +321,6 @@ void ModulePanel::paint (juce::Graphics& g)
 }
 
 // ================================================================ history strips
-constexpr int HistoryStrip::spanSeconds[];
-
 void HistoryStrip::update()
 {
     const int span = spanSeconds[juce::jlimit (0, 2, proc.historySpan)];

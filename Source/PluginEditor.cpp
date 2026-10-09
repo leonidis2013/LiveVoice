@@ -93,7 +93,7 @@ void LiveVoiceEditor::layoutCanvas()
     canvas.gaps.clear();
     for (int i = 0; i < 5; ++i)
     {
-        const int pw = i == 4 ? bottom.getWidth() : juce::roundToInt (w * share[i]);
+        const int pw = i == 4 ? bottom.getWidth() : juce::roundToInt ((float) w * share[i]);
         panels[i]->setBounds (bottom.removeFromLeft (pw));
         if (i < 4) canvas.gaps.push_back (bottom.removeFromLeft (gap));
     }

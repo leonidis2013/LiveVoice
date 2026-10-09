@@ -197,8 +197,8 @@ void RtaDisplay::refreshCurves()
     auto v = [this] (const juce::String& id) { return proc.apvts.getRawParameterValue (id)->load(); };
     const size_t n = curveFreqs.size();
 
-    const bool eqOn = v (params::eqOn) > 0.5f;
-    if (eqOn != eqWasOn) { eqDirty = true; eqWasOn = eqOn; }
+    const bool eqIsOn = v (params::eqOn) > 0.5f;
+    if (eqIsOn != eqWasOn) { eqDirty = true; eqWasOn = eqIsOn; }
 
     bool anyChanged = eqDirty;
     for (int b = 0; b < numEqBands; ++b)
@@ -228,7 +228,7 @@ void RtaDisplay::refreshCurves()
     {
         eqStatic.assign (n, 0.0f);
         eqLive.assign (n, 0.0f);
-        if (eqOn)
+        if (eqIsOn)
             for (int b = 0; b < numEqBands; ++b)
                 for (size_t i = 0; i < n; ++i) { eqStatic[i] += bandStatic[(size_t) b][i]; eqLive[i] += bandLive[(size_t) b][i]; }
         eqDirty = false;
@@ -236,21 +236,21 @@ void RtaDisplay::refreshCurves()
     }
 
     // notches: signature of every active slot
-    const bool fbOn = v (params::fbOn) > 0.5f;
+    const bool fbIsOn = v (params::fbOn) > 0.5f;
     const float q = proc.getNotchQ();
     std::vector<float> sig;
-    if (fbOn)
+    if (fbIsOn)
         for (auto& nt : notches)
             if (nt.kind != dsp::FeedbackSuppressor::kindInactive && nt.depthDb < -0.05f)
             {
                 sig.push_back (std::round (nt.freq));
                 sig.push_back (std::round (nt.depthDb * 10.0f));   // 0.1 dB steps
             }
-    if (notchDirty || sig != lastNotchSig || ! juce::exactlyEqual (q, lastNotchQ) || fbOn != fbWasOn || notchCurve.size() != n)
+    if (notchDirty || sig != lastNotchSig || ! juce::exactlyEqual (q, lastNotchQ) || fbIsOn != fbWasOn || notchCurve.size() != n)
     {
-        lastNotchSig = sig; lastNotchQ = q; fbWasOn = fbOn;
+        lastNotchSig = sig; lastNotchQ = q; fbWasOn = fbIsOn;
         notchCurve.assign (n, 0.0f);
-        if (fbOn)
+        if (fbIsOn)
         {
             const double fs = proc.currentSampleRate.load();
             for (auto& nt : notches)
@@ -361,7 +361,7 @@ void RtaDisplay::renderGrid()
 {
     const float scale = juce::Component::getApproximateScaleFactorForComponent (this);
     const float s = std::max (1.0f, scale);
-    gridImage = juce::Image (juce::Image::RGB, std::max (1, juce::roundToInt (getWidth() * s)), std::max (1, juce::roundToInt (getHeight() * s)), false);
+    gridImage = juce::Image (juce::Image::RGB, std::max (1, juce::roundToInt ((float) getWidth() * s)), std::max (1, juce::roundToInt ((float) getHeight() * s)), false);
     juce::Graphics g (gridImage);
     g.addTransform (juce::AffineTransform::scale (s));
 
