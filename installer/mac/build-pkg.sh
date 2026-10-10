@@ -10,7 +10,13 @@ xattr -cr "$work/root/LiveVoice.vst3" || true
 
 # install exactly into /Library/Audio/Plug-Ins/VST3 (never "relocate" to wherever an old copy lives)
 pkgbuild --analyze --root "$work/root" "$work/components.plist"
-/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$work/components.plist"
+echo "components.plist:"; cat "$work/components.plist"
+i=0
+while /usr/libexec/PlistBuddy -c "Print :$i" "$work/components.plist" >/dev/null 2>&1; do
+    /usr/libexec/PlistBuddy -c "Set :$i:BundleIsRelocatable false" "$work/components.plist" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c "Add :$i:BundleIsRelocatable bool false" "$work/components.plist"
+    i=$((i + 1))
+done
 pkgbuild --root "$work/root" --component-plist "$work/components.plist" \
          --install-location "/Library/Audio/Plug-Ins/VST3" \
          --scripts "installer/mac/scripts" \
