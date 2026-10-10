@@ -1,4 +1,4 @@
-# LiveVoice — zero-latency vocal processor (VST3)  ·  v0.7.1
+# LiveVoice — zero-latency vocal processor (VST3)  ·  v0.7.2
 
 A single VST3 plugin for live voice: pastor on a face mic, lectern speech, male and female vocals.
 Everything in the audio path is zero latency (the plugin reports 0 samples to the host).
@@ -11,11 +11,16 @@ Everything in the audio path is zero latency (the plugin reports 0 samples to th
 
 ## Install / update
 
-**Download:** on this project's page, open **Releases → Latest build** (right-hand side), or use the always-newest links:
-- Mac: https://github.com/leonidis2013/LiveVoice/releases/latest/download/LiveVoice-macOS-VST3.zip
-- Windows: https://github.com/leonidis2013/LiveVoice/releases/latest/download/LiveVoice-Windows-VST3.zip
+**Easiest: use the installer.** On this project's page open **Releases → Latest build** (right-hand side), or use the always-newest links:
+- Mac: https://github.com/leonidis2013/LiveVoice/releases/latest/download/LiveVoice-macOS-Installer.pkg
+- Windows: https://github.com/leonidis2013/LiveVoice/releases/latest/download/LiveVoice-Windows-Installer.exe
 
-### Mac
+The installers remove every older LiveVoice copy (including duplicates like "LiveVoice 2.vst3"), install into the system VST3 folder, and on the Mac clear the download block so the plug-in loads without any Terminal command. Quit your host first and rescan plug-ins afterwards.
+
+- **Mac:** double-click the .pkg. Because it isn't signed with a paid Apple Developer ID yet, macOS first says it can't verify it: click **Done**, open **System Settings → Privacy & Security**, click **Open Anyway** next to the installer and enter your password. Then click through. It installs into `/Library/Audio/Plug-Ins/VST3` for all users.
+- **Windows:** run the .exe. If **Windows protected your PC** appears, click **More info → Run anyway**, then **Yes**. It installs into `C:\Program Files\Common Files\VST3` and can be removed from **Settings → Apps**.
+
+### Manual install from the zip (Mac)
 1. Quit LiveProfessor (or any host that has LiveVoice loaded).
 2. Unzip `LiveVoice-macOS-VST3.zip`.
 3. In Finder choose **Go → Go to Folder**, type `~/Library/Audio/Plug-Ins/VST3` and drag `LiveVoice.vst3` in. If Finder asks, choose **Replace** (not "Keep Both", which makes a broken "LiveVoice 2.vst3").
@@ -31,7 +36,7 @@ Check for leftover copies (only one `LiveVoice.vst3` should be listed):
 ls ~/Library/Audio/Plug-Ins/VST3 /Library/Audio/Plug-Ins/VST3 | grep -i livevoice
 ```
 
-### Windows (10/11, 64-bit)
+### Manual install from the zip (Windows 10/11, 64-bit)
 1. Close the host.
 2. Unzip `LiveVoice-Windows-VST3.zip`.
 3. Copy the whole `LiveVoice.vst3` **folder** into `C:\Program Files\Common Files\VST3\` (click **Continue** when Windows asks for administrator permission; choose **Replace** if asked).
