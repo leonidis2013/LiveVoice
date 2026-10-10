@@ -1,4 +1,4 @@
-# LiveVoice — zero-latency vocal processor (VST3)  ·  v0.7.0
+# LiveVoice — zero-latency vocal processor (VST3)  ·  v0.7.1
 
 A single VST3 plugin for live voice: pastor on a face mic, lectern speech, male and female vocals.
 Everything in the audio path is zero latency (the plugin reports 0 samples to the host).
@@ -8,6 +8,34 @@ Everything in the audio path is zero latency (the plugin reports 0 samples to th
 | ![LiveVoice dark](docs/screenshot-dark.png) | ![LiveVoice light](docs/screenshot-light.png) |
 
 ![Settings](docs/screenshot-settings.png)
+
+## Install / update
+
+**Download:** on this project's page, open **Releases → Latest build** (right-hand side), or use the always-newest links:
+- Mac: https://github.com/leonidis2013/LiveVoice/releases/latest/download/LiveVoice-macOS-VST3.zip
+- Windows: https://github.com/leonidis2013/LiveVoice/releases/latest/download/LiveVoice-Windows-VST3.zip
+
+### Mac
+1. Quit LiveProfessor (or any host that has LiveVoice loaded).
+2. Unzip `LiveVoice-macOS-VST3.zip`.
+3. In Finder choose **Go → Go to Folder**, type `~/Library/Audio/Plug-Ins/VST3` and drag `LiveVoice.vst3` in. If Finder asks, choose **Replace** (not "Keep Both", which makes a broken "LiveVoice 2.vst3").
+4. **Every time you install a new download**, open **Terminal** and run this once (it prints nothing when it works):
+   ```
+   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/LiveVoice.vst3
+   ```
+   Without it, macOS says *"LiveVoice.vst3 is damaged and can't be opened"*. The file is not damaged: macOS blocks plugins downloaded from the internet that aren't signed with a paid Apple developer certificate. **Never click "Move to Trash"** on that message; click Cancel and run the command.
+5. Open the host and rescan plug-ins. The version under the LiveVoice logo should match the release.
+
+Check for leftover copies (only one `LiveVoice.vst3` should be listed):
+```
+ls ~/Library/Audio/Plug-Ins/VST3 /Library/Audio/Plug-Ins/VST3 | grep -i livevoice
+```
+
+### Windows (10/11, 64-bit)
+1. Close the host.
+2. Unzip `LiveVoice-Windows-VST3.zip`.
+3. Copy the whole `LiveVoice.vst3` **folder** into `C:\Program Files\Common Files\VST3\` (click **Continue** when Windows asks for administrator permission; choose **Replace** if asked).
+4. Open the host and rescan plug-ins. Nothing else needs installing (the C++ runtime is built in).
 
 ## What's in it
 
@@ -125,7 +153,7 @@ A locally built plugin runs on your own Mac; to give it to other Macs it needs t
 - Every push to `main` replaces the **Latest build** release (right-hand side of the project page, under *Releases*) with `LiveVoice-macOS-VST3.zip` and `LiveVoice-Windows-VST3.zip`. This link always downloads the newest Mac build: `https://github.com/leonidis2013/LiveVoice/releases/latest/download/LiveVoice-macOS-VST3.zip`. Unzip it and copy `LiveVoice.vst3` into your VST3 folder.
 - Push a tag such as `v0.7.0` and the same zips are attached to a **GitHub Release**, so every version you've shipped stays downloadable.
 - The version in the zip name comes from `project(LiveVoice VERSION …)` in `CMakeLists.txt`, the same number shown under the logo.
-- GitHub's Mac builds are not notarized: the first time, macOS may block the plugin; allow it in System Settings → Privacy & Security, or run `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/LiveVoice.vst3`.
+- GitHub's Mac builds are not notarized, so each new download needs the `xattr` command from **Install / update** above.
 
 ### Tests
 ```
