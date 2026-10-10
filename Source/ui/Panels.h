@@ -281,7 +281,7 @@ public:
 private:
     LiveVoiceProcessor& proc;
     // high-pass (the panel's power button) - first in the chain
-    Knob hpfFreq { "Freq", theme::pse };
+    Knob hpfFreq { "Freq", theme::hpf };
     Combo hpfSlope;
     juce::Label slopeLabel;
     // PSE

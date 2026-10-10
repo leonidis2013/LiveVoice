@@ -1324,7 +1324,7 @@ void DeEssPanel::runSuggestion()
 }
 
 // ================================================================ high-pass + PSE panel
-PsePanel::PsePanel (LiveVoiceProcessor& p) : ModulePanel ("HIGH-PASS", theme::pse), proc (p)
+PsePanel::PsePanel (LiveVoiceProcessor& p) : ModulePanel ("HIGH-PASS", theme::hpf), proc (p)
 {
     auto& s = proc.apvts;
     power.attach (s, params::hpfOn);
@@ -1383,7 +1383,7 @@ void PsePanel::paint (juce::Graphics& g)
     auto b = getContentBounds();
     g.setColour (theme::border);
     g.drawHorizontalLine (pseY, (float) b.getX(), (float) b.getRight());
-    g.setColour (accent);
+    g.setColour (theme::pse);   // the PSE section keeps its own green; the panel accent is the high-pass colour
     g.fillRoundedRectangle ((float) b.getX(), (float) pseY + 15.0f, 3.0f, 12.0f, 1.5f);
     g.setColour (theme::text);
     g.setFont (theme::font (13.0f, true));

@@ -8,25 +8,25 @@ namespace theme
     // Live palette. Everything paints from these at paint time, so switching
     // theme is: apply a palette, remap colours already baked into widgets, repaint.
     inline juce::Colour bg, panel, panelHi, border, grid, text, textDim, textFaint, onAccent;
-    inline juce::Colour eq, feedback, deess, pse, comp, input, output, good, warn, danger;
+    inline juce::Colour eq, feedback, deess, pse, comp, input, output, good, warn, danger, hpf;
     inline juce::Colour bandColours[6];
 
     struct Palette
     {
         juce::uint32 bg, panel, panelHi, border, grid, text, textDim, textFaint, onAccent;
-        juce::uint32 eq, feedback, deess, pse, comp, input, output, good, warn, danger;
+        juce::uint32 eq, feedback, deess, pse, comp, input, output, good, warn, danger, hpf;
         juce::uint32 bands[6];
     };
 
     inline constexpr Palette darkPalette {
         0xff0d1015, 0xff151a21, 0xff1b2129, 0xff252c36, 0xff1e252e, 0xffd8dee6, 0xff7c8794, 0xff4c5561, 0xff0d1015,
-        0xff2ec4b6, 0xffff8a3d, 0xffa78bfa, 0xff8bd450, 0xfff6c453, 0xff5b6676, 0xff4c8dff, 0xff3ecf6e, 0xfff2c94c, 0xffef4c4c,
+        0xff2ec4b6, 0xffff8a3d, 0xffa78bfa, 0xff8bd450, 0xfff6c453, 0xff5b6676, 0xff4c8dff, 0xff3ecf6e, 0xfff2c94c, 0xffef4c4c, 0xff7ea9cc,
         { 0xff2ec4b6, 0xff4cc9f0, 0xff7bdff2, 0xff80ed99, 0xfff7d070, 0xfff4978e } };
 
     // Light: soft grey page, white cards, accents darkened for contrast on white.
     inline constexpr Palette lightPalette {
         0xffe9edf2, 0xfffbfcfd, 0xfff0f3f6, 0xffd3dae3, 0xffe3e8ee, 0xff18202b, 0xff586474, 0xff97a1ae, 0xffffffff,
-        0xff0f9488, 0xffe0661a, 0xff7553e0, 0xff4b9b25, 0xffc98a0a, 0xff9aa3af, 0xff2563d6, 0xff23a056, 0xffcf9a10, 0xffd63232,
+        0xff0f9488, 0xffe0661a, 0xff7553e0, 0xff4b9b25, 0xffc98a0a, 0xff9aa3af, 0xff2563d6, 0xff23a056, 0xffcf9a10, 0xffd63232, 0xff3e6e98,
         { 0xff0f9488, 0xff1b8fc4, 0xff3a9fb5, 0xff3f9d55, 0xffc08a10, 0xffd2584c } };
 
     inline bool lightMode = false;
@@ -35,7 +35,7 @@ namespace theme
     {
         auto u = [] (juce::Colour c) { return c.getARGB(); };
         return { u (bg), u (panel), u (panelHi), u (border), u (grid), u (text), u (textDim), u (textFaint), u (onAccent),
-                 u (eq), u (feedback), u (deess), u (pse), u (comp), u (input), u (output), u (good), u (warn), u (danger),
+                 u (eq), u (feedback), u (deess), u (pse), u (comp), u (input), u (output), u (good), u (warn), u (danger), u (hpf),
                  { u (bandColours[0]), u (bandColours[1]), u (bandColours[2]), u (bandColours[3]), u (bandColours[4]), u (bandColours[5]) } };
     }
 
@@ -45,7 +45,7 @@ namespace theme
         bg = C (p.bg); panel = C (p.panel); panelHi = C (p.panelHi); border = C (p.border); grid = C (p.grid);
         text = C (p.text); textDim = C (p.textDim); textFaint = C (p.textFaint); onAccent = C (p.onAccent);
         eq = C (p.eq); feedback = C (p.feedback); deess = C (p.deess); pse = C (p.pse); comp = C (p.comp);
-        input = C (p.input); output = C (p.output); good = C (p.good); warn = C (p.warn); danger = C (p.danger);
+        input = C (p.input); output = C (p.output); good = C (p.good); warn = C (p.warn); danger = C (p.danger); hpf = C (p.hpf);
         for (int i = 0; i < 6; ++i) bandColours[i] = C (p.bands[i]);
     }
 

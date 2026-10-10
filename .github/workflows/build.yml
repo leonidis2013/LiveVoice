@@ -84,7 +84,7 @@ jobs:
             echo "**Install (Mac):** download LiveVoice-macOS-VST3.zip, unzip it, and copy LiveVoice.vst3 to ~/Library/Audio/Plug-Ins/VST3/ (replace the old one). If macOS blocks it, run once in Terminal:"
             echo '`xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/LiveVoice.vst3`'
             echo
-            echo "**Install (Windows):** unzip LiveVoice-Windows-VST3.zip and copy LiveVoice.vst3 to C:\\Program Files\\Common Files\\VST3\\"
+            echo "**Install (Windows 10/11, 64-bit):** unzip LiveVoice-Windows-VST3.zip and copy the whole LiveVoice.vst3 folder into C:\\Program Files\\Common Files\\VST3\\ (Windows asks for administrator permission; click Continue). Replace the old one if asked. Nothing else needs installing."
             echo
             echo "Then rescan plug-ins in LiveProfessor; the version under the LiveVoice logo should read v$v."
           } > notes.md

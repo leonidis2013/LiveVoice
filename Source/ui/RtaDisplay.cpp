@@ -646,9 +646,9 @@ void RtaDisplay::drawHandles (juce::Graphics& g)
     {
         const auto pos = hpfHandlePosition();
         auto r = juce::Rectangle<float> (24.0f, 18.0f).withCentre (pos).expanded (hoverHpf || dragHpf ? 1.0f : 0.0f);
-        g.setColour (theme::pse.withAlpha (0.25f));
+        g.setColour (theme::hpf.withAlpha (0.25f));
         g.fillRoundedRectangle (r, 5.0f);
-        g.setColour (theme::pse);
+        g.setColour (theme::hpf);
         g.drawRoundedRectangle (r, 5.0f, dragHpf ? 2.0f : 1.3f);
         g.setFont (theme::font (10.0f, true));
         g.drawText ("HP", r, juce::Justification::centred);

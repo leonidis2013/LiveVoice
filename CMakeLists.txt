@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(LiveVoice VERSION 0.7.0 LANGUAGES C CXX)
+project(LiveVoice VERSION 0.7.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,6 +9,10 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "" FORCE)
 endif()
+
+# Windows: build the Microsoft C++ runtime into the plugin (static /MT), so it loads on any PC
+# without the "Visual C++ Redistributable" installed. Must be set before JUCE is added.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # ---------------------------------------------------------------------------
 # JUCE: use a local checkout if JUCE_DIR is given, otherwise download it.
