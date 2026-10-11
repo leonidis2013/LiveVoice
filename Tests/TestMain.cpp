@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Jerod Ulicki
+
 // Offline tests for LiveVoice. Run:  LiveVoiceTests            (DSP tests)
 //                                    LiveVoiceTests --snapshot out.png
 #include "PluginProcessor.h"

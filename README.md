@@ -172,12 +172,19 @@ The suite (98 checks) covers everything from the earlier versions (zero latency,
 `LiveVoiceTests --snapshot out.png [light|toggle]` renders the UI to a PNG (a file name containing `settings` opens the settings card).
 `LiveVoiceTests --deess-probe` prints de-esser results for several settings.
 
+## License
+
+Copyright (C) 2026 Jerod Ulicki. LiveVoice is free software, licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0-only); see [LICENSE](LICENSE). You may use, share and modify it under those terms. If you distribute a modified version, you must publish its source under the same license.
+
+It is built with [JUCE](https://juce.com), which is used here under its AGPLv3 option. Third-party notices are in [THIRD_PARTY.md](THIRD_PARTY.md). VST is a trademark of Steinberg Media Technologies GmbH. This is not an official product of Steinberg, JUCE or any host application named here (including LiveProfessor).
+
 ## Honest limitations
 
 - **No look-ahead anywhere** (that's the cost of 0 ms).
 - **No output limiter** (removed in 0.5.0). Protect the system downstream (LiveProfessor, console or speaker processing).
 - The PSE has no look-ahead either; it opens within about 1 ms, which is inaudible on speech, but a very soft first consonant below the threshold can be slightly softened — set the threshold a little low rather than high.
 - A notch can only be placed after a ring is detected (typically ~0.1–0.3 s). Ring-out with Learn first; live suppression is the backup, not a substitute for good gain structure and mic placement.
+- JUCE is licensed under AGPLv3 or a commercial licence. That matters if you distribute LiveVoice to others.
 - Detection was tuned on simulated voices and rooms. Expect to adjust Sensitivity in your room — raise it if rings get through, lower it if it notches the voice.
 
 ## Code map

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Jerod Ulicki
+
 #include "VoiceAnalysis.h"
 #include "Svf.h"
 #include <juce_dsp/juce_dsp.h>
