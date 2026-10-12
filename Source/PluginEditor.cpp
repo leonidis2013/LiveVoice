@@ -138,7 +138,7 @@ float LiveVoiceEditor::fitScale() const
 {
     auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
     if (display == nullptr) return 0.85f;
-    const auto area = display->userArea;
+    const auto area = display->userBounds;
     const float s = std::min ((float) area.getWidth() * 0.92f / (float) designWidth, (float) area.getHeight() * 0.88f / (float) designHeight);
     return juce::jlimit (0.5f, 1.5f, s);
 }

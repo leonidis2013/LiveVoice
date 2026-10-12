@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(LiveVoice VERSION 0.7.2 LANGUAGES C CXX)
+project(LiveVoice VERSION 0.7.3 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,7 +24,7 @@ else()
     include(FetchContent)
     FetchContent_Declare(JUCE
         GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-        GIT_TAG 8.0.10
+        GIT_TAG 9.0.3
         GIT_SHALLOW ON)
     FetchContent_MakeAvailable(JUCE)
 endif()

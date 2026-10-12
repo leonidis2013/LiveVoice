@@ -137,7 +137,7 @@ A preset stores the **voice settings** (PSE, feedback behaviour, dynamic EQ, de-
 
 ## Building
 
-Requires CMake ≥ 3.22 and a C++17 compiler. JUCE 8.0.10 is downloaded automatically (or pass `-DJUCE_DIR=/path/to/JUCE`).
+Requires CMake ≥ 3.22 and a C++17 compiler. JUCE 9.0.3 is downloaded automatically (or pass `-DJUCE_DIR=/path/to/JUCE`).
 
 **Windows** (Visual Studio 2022 with "Desktop development with C++"):
 ```
