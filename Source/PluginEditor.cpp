@@ -167,6 +167,14 @@ void LiveVoiceEditor::setGpu (bool on)
 
 void LiveVoiceEditor::timerCallback()
 {
+    // window hidden, minimised or covered by a host tab: skip all drawing work,
+    // but keep collecting the feedback log so nothing is missed
+    if (! isShowing())
+    {
+        if ((++tick & 1) == 0) proc.pollFeedbackLog();
+        return;
+    }
+
     // fast (30 fps): things that move quickly
     rta.update();
     ioMeters.update();

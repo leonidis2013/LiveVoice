@@ -115,7 +115,7 @@ namespace dsp::analysis
         // threshold: run the de-esser's own detectors (sibilance band vs the voice body,
         // 200 Hz - 3 kHz) and look at how the sibilants measure
         SvfCoeffs band, bodyHp, bodyLp;
-        band.bandPass (out.freq, out.q, fs);
+        band.bandPass (out.freq, 1.0, fs);   // same detector band as the de-esser's S band
         bodyHp.highPass (200.0, 0.707, fs);
         bodyLp.lowPass (3000.0, 0.707, fs);
         SvfState sb, sh, sl;
@@ -142,7 +142,8 @@ namespace dsp::analysis
         }
         // sibilants flutter (they are noise), so aim well below the softer ones: nearly every "s" gets most of Range
         out.thresholdDb    = juce::jlimit (-60.0f, 0.0f, std::round (percentile (absTyp, 25.0f) - 14.0f));
-        out.relThresholdDb = juce::jlimit (-30.0f, 20.0f, std::round (percentile (relTyp, 25.0f) - 14.0f));
+        // never below -5 dB: bright vowels measure about -6 dB on this cue, and they must stay untouched
+        out.relThresholdDb = juce::jlimit (-5.0f, 20.0f, std::round (percentile (relTyp, 25.0f) - 14.0f));
         out.ok = true;
         return out;
     }

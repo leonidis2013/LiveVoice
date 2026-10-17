@@ -452,7 +452,7 @@ void RtaDisplay::paint (juce::Graphics& g)
         juce::Graphics::ScopedSaveState clip (g);
         g.reduceClipRegion (plot.toNearestInt());
 
-        drawDeEss (g);
+        drawDeEssSolo (g);
         drawEqSolo (g);
 
         // spectra: input as a solid grey area, output as a blue area with a line
@@ -529,6 +529,7 @@ void RtaDisplay::paint (juce::Graphics& g)
         }
     }
 
+    drawDeEss (g);
     drawNotchMarkers (g);
     drawHandles (g);
 
@@ -545,15 +546,15 @@ void RtaDisplay::paint (juce::Graphics& g)
     }
 }
 
-// De-esser: a quiet shaded band with a label. No live numbers.
-void RtaDisplay::drawDeEss (juce::Graphics& g)
+// De-esser solo: lightly shade the region being soloed (the cut region right now).
+void RtaDisplay::drawDeEssSolo (juce::Graphics& g)
 {
+    if (proc.soloTarget.load() != LiveVoiceProcessor::soloDeEss) return;
     auto v = [this] (const juce::String& id) { return proc.apvts.getRawParameterValue (id)->load(); };
-    const bool soloed = proc.soloTarget.load() == LiveVoiceProcessor::soloDeEss;
-    if (v (dsOn) < 0.5f && ! soloed) return;
-
+    const int b = juce::jlimit (0, 1, proc.deEssListenBand.load());
     const int mode = juce::jlimit (0, 2, (int) v (dsMode));
-    const float freq = v (dsFreq), q = v (dsQ);
+    const float freq = mode == dsp::DeEsser::band ? proc.deEsser.getBandFrequency (b) : v (b == 0 ? dsFreq : dsShFreq);
+    const float q = v (b == 0 ? dsQ : dsShQ);
     float lo = freq, hi = maxFreq;
     if (mode == dsp::DeEsser::band)
     {
@@ -562,11 +563,66 @@ void RtaDisplay::drawDeEss (juce::Graphics& g)
         hi = freq * std::pow (2.0f, bwOct * 0.5f);
     }
     const float x0 = xForFreq (juce::jlimit (minFreq, maxFreq, lo)), x1 = xForFreq (juce::jlimit (minFreq, maxFreq, hi));
-    g.setColour (theme::deess.withAlpha (soloed ? 0.18f : 0.09f));
+    g.setColour (theme::deess.withAlpha (0.16f));
     g.fillRect (juce::Rectangle<float> (x0, plot.getY(), x1 - x0, plot.getHeight()));
-    g.setFont (theme::font (10.5f, true));
-    g.setColour (theme::deess.withAlpha (0.85f));
-    g.drawText ("De-esser", juce::Rectangle<float> (0.5f * (x0 + x1) - 40.0f, plot.getBottom() - 18.0f, 80.0f, 14.0f), juce::Justification::centred);
+}
+
+// De-esser: the actual cut, drawn live while it works (exactly as wide and deep as it is),
+// plus a small marker at each active band's frequency so you can see where it is waiting.
+void RtaDisplay::drawDeEss (juce::Graphics& g)
+{
+    auto v = [this] (const juce::String& id) { return proc.apvts.getRawParameterValue (id)->load(); };
+    if (v (dsOn) < 0.5f) return;
+
+    dsp::DeEsser::Settings s;
+    s.on = true;
+    s.mode = juce::jlimit (0, 2, (int) v (dsMode));
+    s.bands[0].on = true;  s.bands[0].freq = v (dsFreq);   s.bands[0].q = v (dsQ);
+    s.bands[1].on = v (dsShOn) > 0.5f; s.bands[1].freq = v (dsShFreq); s.bands[1].q = v (dsShQ);
+
+    float gr[2], fr[2];
+    for (int b = 0; b < 2; ++b)
+    {
+        const float now = s.bands[(size_t) b].on ? proc.deEsser.getBandGainReductionDb (b) : 0.0f;
+        deEssShownGr[(size_t) b] = std::max (now, deEssShownGr[(size_t) b] * 0.82f);   // brief hold so a short "s" is visible
+        gr[b] = deEssShownGr[(size_t) b];
+        fr[b] = s.mode == dsp::DeEsser::band ? proc.deEsser.getBandFrequency (b) : s.bands[(size_t) b].freq;
+    }
+
+    juce::Graphics::ScopedSaveState clip (g);
+    g.reduceClipRegion (plot.toNearestInt());
+
+    // waiting markers at the bottom edge
+    g.setFont (theme::font (10.0f, true));
+    for (int b = 0; b < 2; ++b)
+    {
+        if (! s.bands[(size_t) b].on) continue;
+        const float x = xForFreq (juce::jlimit (minFreq, maxFreq, fr[b]));
+        g.setColour (theme::deess.withAlpha (0.9f));
+        g.fillRect (x - 1.0f, plot.getBottom() - 10.0f, 2.0f, 10.0f);
+        g.drawText (b == 0 ? "S" : "SH", juce::Rectangle<float> (x - 16.0f, plot.getBottom() - 24.0f, 32.0f, 12.0f), juce::Justification::centred);
+    }
+
+    if (std::max (gr[0], gr[1]) < 0.15f) return;
+    const size_t n = curveFreqs.size();
+    if (n < 2) return;
+    const double fs = proc.currentSampleRate.load();
+    juce::Path fill, line;
+    const float y0 = yForEqDb (0.0f);
+    fill.startNewSubPath (curveX[0], y0);
+    for (size_t i = 0; i < n; ++i)
+    {
+        const float db = dsp::DeEsser::reductionResponseDb (s, gr, fr, curveFreqs[i], fs);
+        const float y = yForEqDb (db);
+        fill.lineTo (curveX[i], y);
+        if (i == 0) line.startNewSubPath (curveX[i], y); else line.lineTo (curveX[i], y);
+    }
+    fill.lineTo (curveX[n - 1], y0);
+    fill.closeSubPath();
+    g.setColour (theme::deess.withAlpha (0.28f));
+    g.fillPath (fill);
+    g.setColour (theme::deess);
+    g.strokePath (line, juce::PathStrokeType (1.8f));
 }
 
 // EQ band solo: shade the range the solo filter lets through, in the band's colour.

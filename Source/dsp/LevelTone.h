@@ -58,7 +58,7 @@ namespace dsp
             const int nCh = std::min (channels, buffer.getNumChannels());
             if (! settings.on)
             {
-                if (cutDb != 0.0f || haveBaseline) reset();
+                if (std::abs (cutDb) > 1.0e-6f || haveBaseline) reset();
                 currentCut.store (0.0f, std::memory_order_relaxed);
                 return;
             }
@@ -194,7 +194,11 @@ namespace dsp
                         gainDb = c * gainDb + (1.0f - c) * desired;
                     }
                     else
-                        gainDb = juce::jlimit (-settings.rangeDb, settings.rangeDb, gainDb);   // hold (Range may have changed)
+                    {
+                        // hold; if Range was turned down below the current gain, glide to it (no jump)
+                        const float lim = juce::jlimit (-settings.rangeDb, settings.rangeDb, gainDb);
+                        gainDb = down * gainDb + (1.0f - down) * lim;
+                    }
                     step = (dbToGain (gainDb) - g) / (float) controlInterval;
                     holdSamples = std::max (0, holdSamples - controlInterval);
                 }

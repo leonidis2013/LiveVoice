@@ -59,7 +59,9 @@ PresetManager::Values PresetManager::captureValues() const
 
 void PresetManager::applyValues (const Values& original)
 {
-    Values values (original);
+    Values values;
+    for (auto& v : original)
+        if (std::isfinite (v.second)) values.push_back (v);   // a corrupt NaN / inf value falls back to the default
     params::migrateLegacyHighPass (values);   // presets / A-B slots saved before 0.7.0
     for (auto* p : apvts.processor.getParameters())
     {

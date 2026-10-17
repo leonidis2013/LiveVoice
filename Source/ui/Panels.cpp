@@ -540,19 +540,23 @@ void CompLevelMeter::paint (juce::Graphics& g)
     auto foot = r.removeFromBottom (28.0f);
     r.reduce (0.0f, 6.0f);
     auto scale = r.removeFromRight (22.0f);
-    const float bw = (r.getWidth() - 4.0f) / 2.0f;
+    const float bw = (r.getWidth() - 8.0f) / 3.0f;
     auto inBar = r.removeFromLeft (bw);
     r.removeFromLeft (4.0f);
     auto outBar = r.removeFromLeft (bw);
-    constexpr float lo = -60.0f;
+    r.removeFromLeft (4.0f);
+    auto grBar = r.removeFromLeft (bw);
+    constexpr float lo = -60.0f, grMax = 24.0f;
     auto yFor = [&] (float db) { return juce::jmap (juce::jlimit (lo, 0.0f, db), 0.0f, lo, inBar.getY(), inBar.getBottom()); };
+    auto yForGr = [&] (float db) { return juce::jmap (juce::jlimit (0.0f, grMax, db), 0.0f, grMax, grBar.getY(), grBar.getBottom()); };
 
     g.setFont (theme::font (9.5f, true));
     g.setColour (theme::textDim);
     g.drawText ("IN", head.withX (inBar.getX() - 4.0f).withWidth (bw + 8.0f), juce::Justification::centred);
     g.drawText ("OUT", head.withX (outBar.getX() - 6.0f).withWidth (bw + 12.0f), juce::Justification::centred);
+    g.drawText ("GR", head.withX (grBar.getX() - 4.0f).withWidth (bw + 8.0f), juce::Justification::centred);
 
-    for (auto bar : { inBar, outBar }) { g.setColour (theme::bg); g.fillRoundedRectangle (bar, 2.0f); }
+    for (auto bar : { inBar, outBar, grBar }) { g.setColour (theme::bg); g.fillRoundedRectangle (bar, 2.0f); }
 
     g.setColour (theme::input);
     g.fillRect (inBar.withTop (yFor (in)));
@@ -566,9 +570,19 @@ void CompLevelMeter::paint (juce::Graphics& g)
         const float yTop = yFor (comp + makeup), yBot = yFor (comp);
         g.fillRect (juce::Rectangle<float> (outBar.getX(), yTop, outBar.getWidth(), yBot - yTop));
     }
-    // threshold tick across both bars
+    // threshold tick across the IN and OUT bars
     g.setColour (theme::text.withAlpha (0.7f));
     g.fillRect (inBar.getX(), yFor (raw (proc, compThr)) - 0.5f, outBar.getRight() - inBar.getX(), 1.0f);
+
+    // gain reduction hangs down from the top (0 to 24 dB), with faint ticks every 6 dB
+    if (gr > 0.05f)
+    {
+        g.setColour (reductionColour);
+        g.fillRect (grBar.withBottom (yForGr (gr)));
+    }
+    g.setColour (theme::textFaint.withAlpha (0.5f));
+    for (float db : { 6.0f, 12.0f, 18.0f })
+        g.fillRect (grBar.getX(), yForGr (db) - 0.5f, grBar.getWidth(), 1.0f);
 
     g.setFont (theme::font (9.0f));
     g.setColour (theme::textFaint);
@@ -1212,28 +1226,47 @@ DeEssPanel::DeEssPanel (LiveVoiceProcessor& p) : ModulePanel ("DE-ESSER", theme:
 {
     auto& s = proc.apvts;
     power.attach (s, dsOn);
-    mode.attach (s, dsMode, { "Band (narrow)", "Shelf (all highs)", "Wideband" });
-    mode.setTooltip ("Band: cuts only the sibilance band (set by Freq and Width). Shelf: turns down all the highs. Wideband: ducks the whole voice.");
+    mode.attach (s, dsMode, { "Band (follows the s)", "Split (all above Freq)", "Wideband" });
+    mode.setTooltip ("Band: a narrow cut that lands on each 's' (best clarity). Split: only the part of the voice above Freq "
+                     "is turned down during an 's'; everything below stays untouched. Wideband: the whole voice ducks.");
     addAndMakeVisible (mode);
+
+    for (auto* b : { &bandS, &bandSH })
+    {
+        b->setClickingTogglesState (false);
+        b->setColour (juce::TextButton::buttonOnColourId, theme::deess);
+        b->setColour (juce::TextButton::textColourOnId, theme::onAccent);
+        addAndMakeVisible (b);
+    }
+    bandS.setTooltip ("Edit the S band: 's' sounds, usually 5-9 kHz. Always active while the de-esser is on.");
+    bandSH.setTooltip ("Edit the SH band: harsh 'sh' / 'ch' sounds, usually 3-5 kHz. Switch it on with SH ON for voices that need it.");
+    bandS.onClick = [this] { selectBand (0); };
+    bandSH.onClick = [this] { selectBand (1); };
+    shOn.attach (s, dsShOn);
+    shOn.setTooltip ("Turns the SH band on. Leave it off unless 'sh' and 'ch' sounds are harsh too.");
+    addAndMakeVisible (shOn);
+
     relative.attach (s, dsRelative);
-    relative.setTooltip ("Relative detection: compares the sibilance with the whole voice instead of a fixed level, "
-                         "so a soft talker and a loud talker are de-essed the same. Off = classic absolute threshold.");
-    addAndMakeVisible (relative);
-    solo.setTooltip ("Solo: hear exactly what the de-esser listens to on output 2 (Monitor), to tune Freq and Width onto the 's'. "
+    relative.setTooltip ("Relative detection: compares each band with the body of the voice instead of a fixed level, "
+                         "so soft and loud talkers are de-essed the same and vowels never trigger it. Off = classic absolute threshold.");
+    follow.attach (s, dsFollow);
+    follow.setTooltip ("Follow: during each 's' the cut moves to where that 's' actually peaks (within about half an octave of Freq), "
+                       "then glides back. Lets the cut stay narrow. Band mode only.");
+    solo.setTooltip ("Solo: hear the selected band's cut region on output 2 (Monitor) to tune Freq and Width by ear. "
                      "Output 1 (FOH) is not affected. Not saved with the session.");
     solo.onClick = [this] { proc.soloTarget = solo.getToggleState() ? LiveVoiceProcessor::soloDeEss : LiveVoiceProcessor::soloNone; };
-    addAndMakeVisible (solo);
+    for (auto* c : { (juce::Component*) &relative, (juce::Component*) &follow, (juce::Component*) &solo }) addAndMakeVisible (c);
 
     suggest.setColour (juce::TextButton::buttonOnColourId, theme::deess);
     suggest.setColour (juce::TextButton::textColourOnId, theme::onAccent);
-    suggest.setTooltip ("Suggest: press while the pastor talks normally. After 20 s LiveVoice sets Freq, Width and Threshold "
+    suggest.setTooltip ("Suggest: press while the pastor talks normally. After 20 s LiveVoice sets the S band's Freq and Threshold "
                         "for this voice. Press again to cancel. KEEP or REVERT appears next to the result.");
     suggest.onClick = [this] { clickSuggest (proc, LiveVoiceProcessor::CaptureTarget::deEss); suggestion.clear(); };
     addAndMakeVisible (suggest);
     addAndMakeVisible (suggestion);
 
-    freq.attach (s, dsFreq); width.attach (s, dsQ); range.attach (s, dsRange); rel.attach (s, dsRel);
-    bindThreshold();
+    rel.attach (s, dsRel);
+    bindBand();
     for (auto* k : { &freq, &width, &thr, &range, &rel }) addAndMakeVisible (k);
     addAndMakeVisible (grMeter);
     for (auto* l : { &grLabel, &grValue })
@@ -1244,15 +1277,34 @@ DeEssPanel::DeEssPanel (LiveVoiceProcessor& p) : ModulePanel ("DE-ESSER", theme:
         addAndMakeVisible (l);
     }
     grLabel.setText ("GR dB", juce::dontSendNotification);
+    selectBand (0);
 }
 
-void DeEssPanel::bindThreshold()
+void DeEssPanel::selectBand (int b)
+{
+    band = juce::jlimit (0, 1, b);
+    bandS.setToggleState (band == 0, juce::dontSendNotification);
+    bandSH.setToggleState (band == 1, juce::dontSendNotification);
+    proc.deEssListenBand = band;
+    bindBand();
+}
+
+void DeEssPanel::bindBand()
 {
     const int isRel = raw (proc, dsRelative) > 0.5f ? 1 : 0;
-    if (isRel == boundRelative) return;
-    boundRelative = isRel;
-    thr.attach (proc.apvts, isRel ? dsRelThr : dsThr);
-    thr.label.setText (isRel ? "Rel. Threshold" : "Threshold", juce::dontSendNotification);
+    if (isRel == boundRelative && band == boundBand) return;
+    boundRelative = isRel; boundBand = band;
+    auto& s = proc.apvts;
+    const bool sh = band == 1;
+    freq.attach (s, sh ? dsShFreq : dsFreq);
+    width.attach (s, sh ? dsShQ : dsQ);
+    range.attach (s, sh ? dsShRange : dsRange);
+    thr.attach (s, isRel ? (sh ? dsShRelThr : dsRelThr) : (sh ? dsShThr : dsThr));
+    const juce::String prefix = sh ? "SH " : "S ";
+    freq.label.setText (prefix + "Freq", juce::dontSendNotification);
+    width.label.setText (prefix + "Width", juce::dontSendNotification);
+    range.label.setText (prefix + "Range", juce::dontSendNotification);
+    thr.label.setText (prefix + (isRel ? "Rel. Thr" : "Threshold"), juce::dontSendNotification);
 }
 
 void DeEssPanel::resized()
@@ -1270,7 +1322,14 @@ void DeEssPanel::resized()
     suggest.setBounds (row);
     r.removeFromTop (6);
     row = r.removeFromTop (26);
-    relative.setBounds (row.removeFromLeft (row.getWidth() * 3 / 5).withTrimmedRight (4));
+    const int third = row.getWidth() / 3;
+    bandS.setBounds (row.removeFromLeft (third).withTrimmedRight (3));
+    bandSH.setBounds (row.removeFromLeft (third).withTrimmedRight (3));
+    shOn.setBounds (row);
+    r.removeFromTop (6);
+    row = r.removeFromTop (26);
+    relative.setBounds (row.removeFromLeft (row.getWidth() * 2 / 5).withTrimmedRight (3));
+    follow.setBounds (row.removeFromLeft (row.getWidth() / 2).withTrimmedRight (3));
     solo.setBounds (row);
     r.removeFromTop (8);
 
@@ -1289,13 +1348,19 @@ void DeEssPanel::resized()
 
 void DeEssPanel::update()
 {
-    bindThreshold();
+    bindBand();
     const float gr = proc.deEsser.getCurrentGainReductionDb();
     grMeter.setValue (gr);
     grValue.setText (juce::String (-gr, 1), juce::dontSendNotification);
     const bool soloed = proc.soloTarget.load() == LiveVoiceProcessor::soloDeEss;
     if (solo.getToggleState() != soloed) solo.setToggleState (soloed, juce::dontSendNotification);
-    width.setEnabled ((int) raw (proc, dsMode) == (int) DsMode::band);
+    const bool bandMode = (int) raw (proc, dsMode) == (int) DsMode::band;
+    width.setEnabled (bandMode);
+    follow.setEnabled (bandMode);
+    const bool shActive = raw (proc, dsShOn) > 0.5f;
+    bandSH.setButtonText (shActive ? "SH" : "SH (off)");
+    const bool editable = band == 0 || shActive;
+    for (auto* k : { &freq, &width, &thr, &range }) k->setAlpha (editable ? 1.0f : 0.45f);
 
     if (driveSuggestButton (proc, suggest, LiveVoiceProcessor::CaptureTarget::deEss))
         runSuggestion();
@@ -1311,19 +1376,20 @@ void DeEssPanel::runSuggestion()
         return;
     }
     std::vector<std::pair<juce::String, float>> before;
-    for (auto* id : { &dsMode, &dsFreq, &dsQ, &dsThr, &dsRelThr })
+    for (auto* id : { &dsMode, &dsFreq, &dsThr, &dsRelThr })
         before.emplace_back (*id, raw (proc, *id));
 
+    // sets the S band only; Width stays as it is (Follow lands the narrow cut on the peak)
     proc.undoManager.beginNewTransaction ("De-esser suggest");
     setReal (proc, dsMode, (float) DsMode::band);
     setReal (proc, dsFreq, s.freq);
-    setReal (proc, dsQ, s.q);
     setReal (proc, dsThr, s.thresholdDb);
     setReal (proc, dsRelThr, s.relThresholdDb);
+    selectBand (0);
     const bool relMode = raw (proc, dsRelative) > 0.5f;
     const int thrShown = juce::roundToInt (relMode ? s.relThresholdDb : s.thresholdDb);
-    suggestion.show ("Suggested: " + juce::String (s.freq / 1000.0f, 1) + " kHz, Q " + juce::String (s.q, 1)
-                     + ", " + (relMode ? "rel thr " : "thr ") + juce::String (thrShown) + " dB", std::move (before));
+    suggestion.show ("Suggested: S at " + juce::String (s.freq / 1000.0f, 1) + " kHz, "
+                     + (relMode ? "rel thr " : "thr ") + juce::String (thrShown) + " dB", std::move (before));
 }
 
 // ================================================================ high-pass + PSE panel
@@ -1495,12 +1561,12 @@ void LevelTonePanel::resized()
     row = r.removeFromTop (26);
     speedLabel.setBounds (row.removeFromLeft (48));
     speed.setBounds (row);
-    r.removeFromTop (12);
+    r.removeFromTop (10);
     toneY = r.getY();
-    r.removeFromTop (22);
+    r.removeFromTop (8);
     row = r.removeFromTop (26);
-    proximity.setBounds (row.removeFromLeft (row.getWidth() * 3 / 5).withTrimmedRight (4));
-    proxValue.setBounds (row);
+    proximity.setBounds (row.removeFromRight (42).withSizeKeepingCentre (42, 20).translated (-2, 0));
+    proxValue.setBounds (row.withTrimmedLeft (110).withTrimmedRight (6));
     r.removeFromTop (8);
     row = r.removeFromTop (knobH);
     proxAmount.setBounds (row.removeFromLeft (kw)); warmth.setBounds (row);
@@ -1512,9 +1578,11 @@ void LevelTonePanel::paint (juce::Graphics& g)
     auto b = getContentBounds();
     g.setColour (theme::border);
     g.drawHorizontalLine (toneY, (float) b.getX(), (float) b.getRight());
-    g.setColour (theme::textFaint);
-    g.setFont (theme::font (11.0f, true));
-    g.drawText ("TONE", b.getX(), toneY + 4, b.getWidth(), 16, juce::Justification::centredLeft);
+    g.setColour (theme::output);
+    g.fillRoundedRectangle ((float) b.getX(), (float) toneY + 15.0f, 3.0f, 12.0f, 1.5f);
+    g.setColour (raw (proc, proxOn) > 0.5f ? theme::text : theme::textDim);
+    g.setFont (theme::font (13.0f, true));
+    g.drawText ("PROXIMITY", b.getX() + 10, toneY + 8, 120, 26, juce::Justification::centredLeft);
 }
 
 void LevelTonePanel::update()
@@ -1525,6 +1593,7 @@ void LevelTonePanel::update()
     proxValue.setText (on ? (cut > 0.05f ? "-" + juce::String (cut, 1) + " dB" : "0.0 dB") : "", juce::dontSendNotification);
     proxValue.setColour (juce::Label::textColourId, on && cut > 0.5f ? theme::output : theme::textDim);
     proxAmount.setEnabled (on);
+    if (on != proxShownOn) { proxShownOn = on; repaint(); }
     const bool lv = raw (proc, lvlOn) > 0.5f;
     target.setEnabled (lv); range.setEnabled (lv); speed.setEnabled (lv);
 }
@@ -1554,7 +1623,7 @@ void CompPanel::resized()
 {
     layoutHeader();
     auto r = getContentBounds();
-    levelMeter.setBounds (r.removeFromRight (64));
+    levelMeter.setBounds (r.removeFromRight (88));
     r.removeFromRight (4);
 
     auto top = r.removeFromTop (26);

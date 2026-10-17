@@ -261,16 +261,19 @@ public:
 
 private:
     LiveVoiceProcessor& proc;
-    void bindThreshold();
+    void bindBand();            // attaches the knobs to the selected band (S or SH) and threshold type
+    void selectBand (int b);
     Combo mode;
-    ToggleBtn relative { "RELATIVE", theme::deess }, solo { "SOLO", theme::warn };
+    juce::TextButton bandS { "S" }, bandSH { "SH" };
+    ToggleBtn shOn { "SH ON", theme::deess };
+    ToggleBtn relative { "RELATIVE", theme::deess }, follow { "FOLLOW", theme::deess }, solo { "SOLO", theme::warn };
     Knob freq { "Freq", theme::deess }, width { "Width (Q)", theme::deess }, thr { "Threshold", theme::deess },
          range { "Range", theme::deess }, rel { "Release", theme::deess };
     GainReductionMeter grMeter { theme::deess, 24.0f };
     juce::Label grLabel, grValue;
     SuggestionBar suggestion { proc, theme::deess };
     juce::TextButton suggest { "SUGGEST" };
-    int boundRelative = -1;
+    int band = 0, boundBand = -1, boundRelative = -1;
     void runSuggestion();
 };
 
@@ -322,9 +325,10 @@ private:
     Knob target { "Target", theme::output }, range { "Range", theme::output };
     Combo speed;
     juce::Label speedLabel, proxValue;
-    ToggleBtn proximity { "PROXIMITY", theme::output };
+    ToggleBtn proximity { "ON", theme::output };   // proximity section on/off pill, like the PSE section
     Knob proxAmount { "Max Cut", theme::output }, warmth { "Warmth", theme::output };
     int toneY = 0;
+    bool proxShownOn = false;
 };
 
 class CompPanel : public ModulePanel

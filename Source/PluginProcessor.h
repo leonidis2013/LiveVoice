@@ -60,7 +60,7 @@ public:
     double getTailLengthSeconds() const override { return 0.0; }
 
     int getNumPrograms() override;
-    int getCurrentProgram() override { return currentProgram; }
+    int getCurrentProgram() override { return 0; }
     void setCurrentProgram (int index) override;
     const juce::String getProgramName (int index) override;
     void changeProgramName (int, const juce::String&) override {}
@@ -94,7 +94,8 @@ public:
     // Monitor output (output channel 2 when the input is mono): carries FOH, the dry input (A/B), or the solo.
     // soloToMain: fallback for hosts without monitor routing - solo replaces the main output.
     std::atomic<bool> monitorDry { false }, soloToMain { false };
-    std::atomic<int> deEssListen { 0 };   // de-ess solo plays: 0 = sibilance band, 1 = what's removed
+    std::atomic<int> deEssListen { 0 };
+    std::atomic<int> deEssListenBand { 0 };   // which band the de-ess solo plays (0 = S, 1 = SH); follows the panel   // de-ess solo plays: 0 = sibilance band, 1 = what's removed
 
     // Level match: short-term loudness of the plugin's input (before INPUT trim) and output,
     // only measured while someone is talking. outputVsInputDb = output - input.
@@ -155,6 +156,8 @@ private:
         std::array<Band, params::numEqBands> bands;
         std::atomic<float>* dsOn; std::atomic<float>* dsFreq; std::atomic<float>* dsThr; std::atomic<float>* dsRange; std::atomic<float>* dsMode; std::atomic<float>* dsRel;
         std::atomic<float>* dsRelative; std::atomic<float>* dsRelThr; std::atomic<float>* dsQ;
+        std::atomic<float>* dsFollow; std::atomic<float>* dsShOn; std::atomic<float>* dsShFreq; std::atomic<float>* dsShQ;
+        std::atomic<float>* dsShThr; std::atomic<float>* dsShRelThr; std::atomic<float>* dsShRange;
         std::atomic<float>* pseOn; std::atomic<float>* pseThr; std::atomic<float>* pseRange; std::atomic<float>* pseAttack;
         std::atomic<float>* pseHold; std::atomic<float>* pseRelease; std::atomic<float>* pseScHp; std::atomic<float>* pseScLp;
         std::atomic<float>* compOn; std::atomic<float>* compThr; std::atomic<float>* compRatio; std::atomic<float>* compKnee;
@@ -167,14 +170,19 @@ private:
     dsp::SvfCoeffs soloCoeffs;
     std::array<dsp::SvfState, 2> soloState;
     int lastSoloBand = -1;
-    juce::AudioBuffer<float> dryBuf, soloBuf;
+    juce::AudioBuffer<float> dryBuf, soloBuf, rawBuf;
+    float bypassMix = 0.0f;          // 0 = processed, 1 = bypassed (10 ms crossfade)
+    bool fullyBypassed = false;
+    void processChunk (juce::AudioBuffer<float>&);
+    void resetChain() noexcept;
     int lastDetectCount = 0;
     double powIn = 0.0, powOut = 0.0;   // gated short-term power for level match
     std::atomic<float> levelAdjustDb { 0.0f };
 
     // capture
     std::vector<float> captureData;
-    std::atomic<int> captureState { 0 }, captureTarget { 0 }, capturePos { 0 };   // state 0 idle, 1 recording, 2 done
+    static constexpr double maxCaptureSeconds = 30.0;
+    std::atomic<int> captureState { 0 }, captureTarget { 0 }, capturePos { 0 }, captureLen { 0 };   // state 0 idle, 1 recording, 2 done
     void feedCapture (const juce::AudioBuffer<float>& b, int numSamples, CaptureTarget at) noexcept;
 
     std::vector<LogEntry> feedbackLog;
@@ -185,7 +193,6 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> inGainSmooth, outGainSmooth;
     std::vector<float> monoScratch;
     juce::SpinLock uiCommandLock;
-    int currentProgram = 0;
     bool eqWasOn = true;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LiveVoiceProcessor)

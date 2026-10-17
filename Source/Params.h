@@ -100,11 +100,19 @@ namespace params
 
     inline const juce::String dsRelative { "dsRelative" };    // relative detection on/off
     inline const juce::String dsRelThr { "dsRelThr" };     // threshold used in relative mode
-    inline const juce::String dsQ      { "dsQ" };          // width of the sibilance band
+    inline const juce::String dsQ      { "dsQ" };          // width of the "S" cut (Q)
+    inline const juce::String dsFollow { "dsFollow" };     // cut follows the peak of each "s"
+    // second band: "SH" (sh / ch, around 3.8 kHz)
+    inline const juce::String dsShOn     { "dsShOn" };
+    inline const juce::String dsShFreq   { "dsShFreq" };
+    inline const juce::String dsShQ      { "dsShQ" };
+    inline const juce::String dsShThr    { "dsShThr" };
+    inline const juce::String dsShRelThr { "dsShRelThr" };
+    inline const juce::String dsShRange  { "dsShRange" };
 
     // Band: dynamic bell on just the sibilance band (narrow). Shelf: dynamic high shelf (all highs).
     // Wideband: whole signal ducks.
-    enum class DsMode { band = 0, shelf, wideband };
+    enum class DsMode { band = 0, split, wideband };
 
     // ---- PSE (primary source expander) ----
     inline const juce::String pseOn      { "pseOn" };
@@ -242,12 +250,19 @@ namespace params
         addB (dsOn,    "De-Esser On", true);
         addF (dsFreq,  "De-Ess Freq", freqRange (2000.0f, 12000.0f), 6000.0f, hz);
         addF (dsThr,   "De-Ess Threshold", { -60.0f, 0.0f, 0.1f }, -30.0f, db);
-        addF (dsRange, "De-Ess Range", { 0.0f, 24.0f, 0.1f }, 8.0f, db);
-        addC (dsMode,  "De-Ess Mode", { "Band (narrow)", "Shelf (all highs)", "Wideband" }, 0);
-        addF (dsQ,     "De-Ess Width", timeRange (0.6f, 6.0f, 1.6f), 1.0f, qa);
+        addF (dsRange, "De-Ess Range", { 0.0f, 24.0f, 0.1f }, 10.0f, db);
+        addC (dsMode,  "De-Ess Mode", { "Band (follows the s)", "Split (all above Freq)", "Wideband" }, 0);
+        addF (dsQ,     "De-Ess Width", timeRange (0.6f, 6.0f, 1.6f), 2.5f, qa);
         addF (dsRel,   "De-Ess Release", timeRange (20.0f, 500.0f, 80.0f), 80.0f, ms);
         addB (dsRelative,  "De-Ess Relative Detection", true);
-        addF (dsRelThr, "De-Ess Relative Threshold", { -30.0f, 20.0f, 0.1f }, -6.0f, db);
+        addF (dsRelThr, "De-Ess Relative Threshold", { -30.0f, 20.0f, 0.1f }, -3.0f, db);
+        addB (dsFollow, "De-Ess Follow", true);
+        addB (dsShOn,     "De-Ess SH On", false);
+        addF (dsShFreq,   "De-Ess SH Freq", freqRange (2500.0f, 5500.0f), 3800.0f, hz);
+        addF (dsShQ,      "De-Ess SH Width", timeRange (0.6f, 6.0f, 1.6f), 2.0f, qa);
+        addF (dsShThr,    "De-Ess SH Threshold", { -60.0f, 0.0f, 0.1f }, -30.0f, db);
+        addF (dsShRelThr, "De-Ess SH Relative Threshold", { -30.0f, 20.0f, 0.1f }, 0.0f, db);
+        addF (dsShRange,  "De-Ess SH Range", { 0.0f, 24.0f, 0.1f }, 6.0f, db);
 
         // PSE
         addB (pseOn,      "PSE On", false);

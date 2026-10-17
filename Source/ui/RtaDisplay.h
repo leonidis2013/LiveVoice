@@ -59,6 +59,7 @@ private:
 
     void renderGrid();
     void drawDeEss (juce::Graphics&);
+    void drawDeEssSolo (juce::Graphics&);
     void drawEqSolo (juce::Graphics&);
     void drawNotchMarkers (juce::Graphics&);
     void drawHandles (juce::Graphics&);
@@ -78,6 +79,7 @@ private:
     std::array<float, params::numEqBands> bandLiveGain {};
     std::vector<float> eqStatic, eqLive, notchCurve, hpfCurve, hpfSig;
     bool hpfWasOn = false, dragHpf = false, hoverHpf = false;
+    std::array<float, 2> deEssShownGr {};
     std::vector<float> lastNotchSig;
     bool eqDirty = true, notchDirty = true, eqWasOn = false, fbWasOn = false;
     float lastNotchQ = 0.0f;

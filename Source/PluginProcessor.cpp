@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Jerod Ulicki
 
 #include "PluginProcessor.h"
+#include "dsp/SoftClip.h"
 #include "PluginEditor.h"
 
 LiveVoiceProcessor::LiveVoiceProcessor()
@@ -27,6 +28,8 @@ LiveVoiceProcessor::LiveVoiceProcessor()
     }
     p.dsOn = raw (dsOn); p.dsFreq = raw (dsFreq); p.dsThr = raw (dsThr); p.dsRange = raw (dsRange); p.dsMode = raw (dsMode); p.dsRel = raw (dsRel);
     p.dsRelative = raw (dsRelative); p.dsRelThr = raw (dsRelThr); p.dsQ = raw (dsQ);
+    p.dsFollow = raw (dsFollow); p.dsShOn = raw (dsShOn); p.dsShFreq = raw (dsShFreq); p.dsShQ = raw (dsShQ);
+    p.dsShThr = raw (dsShThr); p.dsShRelThr = raw (dsShRelThr); p.dsShRange = raw (dsShRange);
     p.pseOn = raw (pseOn); p.pseThr = raw (pseThr); p.pseRange = raw (pseRange); p.pseAttack = raw (pseAttack);
     p.pseHold = raw (pseHold); p.pseRelease = raw (pseRelease); p.pseScHp = raw (pseScHp); p.pseScLp = raw (pseScLp);
     p.compOn = raw (compOn); p.compThr = raw (compThr); p.compRatio = raw (compRatio); p.compKnee = raw (compKnee);
@@ -73,9 +76,22 @@ void LiveVoiceProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     warmthFx.prepare (sampleRate, nCh);
     detector.prepare (sampleRate);
 
-    monoScratch.assign ((size_t) std::max (512, samplesPerBlock), 0.0f);
-    dryBuf.setSize (2, std::max (512, samplesPerBlock));
-    soloBuf.setSize (2, std::max (512, samplesPerBlock));
+    // Buffers are sized once here and never resized on the audio thread. A host that sends a larger
+    // block than this gets it processed in chunks of this size (see processBlock).
+    const int maxBlock = std::max (8192, 2 * samplesPerBlock);
+    monoScratch.assign (512, 0.0f);
+    dryBuf.setSize (2, maxBlock);
+    soloBuf.setSize (2, maxBlock);
+    rawBuf.setSize (2, maxBlock);
+
+    // Suggest capture: allocated once for the longest capture; startCapture never reallocates it
+    captureState.store (0);
+    captureData.assign ((size_t) (maxCaptureSeconds * sampleRate) + 1, 0.0f);
+    captureLen.store (0);
+    capturePos.store (0);
+
+    bypassMix = p.bypass->load() > 0.5f ? 1.0f : 0.0f;
+    fullyBypassed = bypassMix >= 1.0f;
 
     inGainSmooth.reset (sampleRate, 0.02);
     outGainSmooth.reset (sampleRate, 0.02);
@@ -136,10 +152,13 @@ void LiveVoiceProcessor::updateSettings()
     dsp::DeEsser::Settings de;
     de.on = p.dsOn->load() > 0.5f;
     de.mode = juce::jlimit (0, 2, (int) p.dsMode->load());
-    de.freq = p.dsFreq->load(); de.q = p.dsQ->load(); de.thresholdDb = p.dsThr->load();
-    de.rangeDb = p.dsRange->load(); de.releaseMs = p.dsRel->load();
-    de.relative = p.dsRelative->load() > 0.5f; de.relThresholdDb = p.dsRelThr->load();
+    de.relative = p.dsRelative->load() > 0.5f;
+    de.follow = p.dsFollow->load() > 0.5f;
+    de.releaseMs = p.dsRel->load();
     de.listen = deEssListen.load();
+    de.listenBand = deEssListenBand.load();
+    de.bands[0] = { true, p.dsFreq->load(), p.dsQ->load(), p.dsThr->load(), p.dsRelThr->load(), p.dsRange->load() };
+    de.bands[1] = { p.dsShOn->load() > 0.5f, p.dsShFreq->load(), p.dsShQ->load(), p.dsShThr->load(), p.dsShRelThr->load(), p.dsShRange->load() };
     deEsser.setSettings (de);
 
     dsp::PrimarySourceExpander::Settings ps;
@@ -174,7 +193,42 @@ bool LiveVoiceProcessor::isMonitorBusActive() const
 void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
+    const int total = buffer.getNumSamples();
+    const int nChannels = buffer.getNumChannels();
+    if (total == 0 || nChannels == 0)
+        return;
 
+    // Normal case: one pass. A host block larger than the prepared size is processed in chunks,
+    // so nothing is ever allocated on the audio thread.
+    const int cap = dryBuf.getNumSamples();
+    if (total <= cap)
+    {
+        processChunk (buffer);
+        return;
+    }
+    constexpr int maxCh = 8;
+    float* ptrs[maxCh] {};
+    const int nch = std::min (maxCh, nChannels);
+    for (int start = 0; start < total; start += cap)
+    {
+        const int n = std::min (cap, total - start);
+        for (int c = 0; c < nch; ++c) ptrs[c] = buffer.getWritePointer (c, start);
+        juce::AudioBuffer<float> view (ptrs, nch, n);
+        processChunk (view);
+    }
+}
+
+void LiveVoiceProcessor::resetChain() noexcept
+{
+    // filter memories only: slow estimates (leveler gain, compressor auto gain, proximity baseline)
+    // are kept, so the level comes back exactly where it was
+    highPass.reset(); pse.reset(); feedback.reset(); dynEq.reset(); deEsser.reset(); warmthFx.reset();
+    inGainSmooth.setCurrentAndTargetValue (dsp::dbToGain (p.inGain->load()));
+    outGainSmooth.setCurrentAndTargetValue (dsp::dbToGain (p.outGain->load()));
+}
+
+void LiveVoiceProcessor::processChunk (juce::AudioBuffer<float>& buffer)
+{
     const int numSamples = buffer.getNumSamples();
     // processing runs on the input channels (1 = mono voice, 2 = stereo); with a mono input and
     // 2 output channels, output channel 2 is the Monitor feed
@@ -188,12 +242,8 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     if (numSamples == 0 || nCh == 0)
         return;
 
-    // growing blocks (some hosts exceed the prepared size): resize outside the hot path rarely
-    if (numSamples > dryBuf.getNumSamples())
-    {
-        dryBuf.setSize (2, numSamples, false, false, true);
-        soloBuf.setSize (2, numSamples, false, false, true);
-    }
+    juce::AudioBuffer<float> raw (rawBuf.getArrayOfWritePointers(), nCh, numSamples);
+    for (int ch = 0; ch < nCh; ++ch) raw.copyFrom (ch, 0, main, ch, 0, numSamples);   // the plugin's input, for bypass
     juce::AudioBuffer<float> dry (dryBuf.getArrayOfWritePointers(), nCh, numSamples);
     juce::AudioBuffer<float> soloSig (soloBuf.getArrayOfWritePointers(), nCh, numSamples);
     for (int ch = 0; ch < nCh; ++ch) dry.copyFrom (ch, 0, main, ch, 0, numSamples);   // untouched input for A/B
@@ -238,18 +288,27 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         for (int ch = 0; ch < mon.getNumChannels(); ++ch)
         {
             mon.copyFrom (ch, 0, src, std::min (ch, nCh - 1), 0, numSamples);
-            juce::FloatVectorOperations::clip (mon.getWritePointer (ch), mon.getReadPointer (ch), -1.0f, 1.0f, numSamples);
+            dsp::SoftClip::process (mon.getWritePointer (ch), numSamples);   // a solo can never overload a wedge
         }
     };
 
-    if (p.bypass->load() > 0.5f)
+    const bool wantBypass = p.bypass->load() > 0.5f;
+    if (wantBypass && bypassMix >= 1.0f)
     {
+        fullyBypassed = true;
         tapMono (main, [this] (const float* m, int n) { inputTap.push (m, n); outputTap.push (m, n); });
         const float pk = blockPeak (main);
         storePeak (inputPeakDb, pk);
         storePeak (outputPeakDb, pk);
         writeMonitor (main);
         return;
+    }
+
+    // leaving a full bypass: start every module from a clean state, then fade in (below)
+    if (fullyBypassed)
+    {
+        resetChain();
+        fullyBypassed = false;
     }
 
     // ---- input trim ----
@@ -346,6 +405,27 @@ void LiveVoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         }
     }
 
+    // ---- output protection: only the top 1 dB is touched, nothing passes 0 dBFS ----
+    for (int ch = 0; ch < nCh; ++ch) dsp::SoftClip::process (main.getWritePointer (ch), numSamples);
+
+    // ---- bypass crossfade (10 ms) between the processed signal and the plugin's input ----
+    if (wantBypass || bypassMix > 0.0f)
+    {
+        const float target = wantBypass ? 1.0f : 0.0f;
+        const float step = 1.0f / (0.010f * (float) currentSampleRate.load());
+        float m = bypassMix;
+        for (int i = 0; i < numSamples; ++i)
+        {
+            m = target > m ? std::min (target, m + step) : std::max (target, m - step);
+            for (int ch = 0; ch < nCh; ++ch)
+            {
+                float* d = main.getWritePointer (ch);
+                d[i] = (1.0f - m) * d[i] + m * raw.getSample (ch, i);
+            }
+        }
+        bypassMix = m;
+    }
+
     storePeak (outputPeakDb, blockPeak (main));
     tapMono (main, [this] (const float* m, int n) { outputTap.push (m, n); });
 
@@ -392,7 +472,8 @@ void LiveVoiceProcessor::feedCapture (const juce::AudioBuffer<float>& b, int num
     if (captureState.load (std::memory_order_acquire) != 1 || captureTarget.load (std::memory_order_relaxed) != (int) at)
         return;
     int pos = capturePos.load (std::memory_order_relaxed);
-    const int cap = (int) captureData.size();
+    const int cap = std::min (captureLen.load (std::memory_order_acquire), (int) captureData.size());
+    if (pos >= cap) return;
     const int n = std::min (numSamples, cap - pos);
     const float* l = b.getReadPointer (0);
     const float* r = b.getNumChannels() > 1 ? b.getReadPointer (1) : nullptr;
@@ -404,8 +485,11 @@ void LiveVoiceProcessor::feedCapture (const juce::AudioBuffer<float>& b, int num
 
 void LiveVoiceProcessor::startCapture (CaptureTarget t, double seconds)
 {
+    // The buffer was allocated in prepareToPlay and is never resized here, so the audio thread can
+    // keep writing safely even if this runs in the middle of its block.
     captureState.store (0);
-    captureData.assign ((size_t) (seconds * currentSampleRate.load()), 0.0f);   // allocate on the message thread
+    const int len = juce::jlimit (0, (int) captureData.size(), (int) (std::min (seconds, maxCaptureSeconds) * currentSampleRate.load()));
+    captureLen.store (len, std::memory_order_release);
     capturePos.store (0);
     captureTarget.store ((int) t);
     captureState.store (1, std::memory_order_release);
@@ -419,14 +503,16 @@ void LiveVoiceProcessor::cancelCapture()
 
 float LiveVoiceProcessor::getCaptureProgress() const noexcept
 {
-    if (captureData.empty()) return 0.0f;
-    return (float) capturePos.load() / (float) captureData.size();
+    const int len = captureLen.load();
+    if (len <= 0) return 0.0f;
+    return (float) capturePos.load() / (float) len;
 }
 
 std::vector<float> LiveVoiceProcessor::takeCapture()
 {
     std::vector<float> out;
-    if (captureState.load() == 2) out.swap (captureData);
+    if (captureState.load() == 2)
+        out.assign (captureData.begin(), captureData.begin() + std::min ((int) captureData.size(), capturePos.load()));
     captureState.store (0);
     captureTarget.store (0);
     return out;
@@ -485,22 +571,11 @@ juce::AudioProcessorParameter* LiveVoiceProcessor::getBypassParameter() const
     return apvts.getParameter (params::bypass);
 }
 
-// ---- programs = factory presets, so hosts can list them too ----
-int LiveVoiceProcessor::getNumPrograms()
-{
-    return presets.getFactoryNames().size();
-}
-
-void LiveVoiceProcessor::setCurrentProgram (int index)
-{
-    if (presets.loadFactory (index))
-        currentProgram = index;
-}
-
-const juce::String LiveVoiceProcessor::getProgramName (int index)
-{
-    return presets.getFactoryNames()[index];
-}
+// ---- programs: exactly one. With more than one, VST3 hosts get an automatable "Program"
+// parameter that could load a factory preset mid-service. Presets live in the plugin's own menu.
+int LiveVoiceProcessor::getNumPrograms() { return 1; }
+void LiveVoiceProcessor::setCurrentProgram (int) {}
+const juce::String LiveVoiceProcessor::getProgramName (int) { return "LiveVoice"; }
 
 // ---- state: parameters + learned (fixed) notches + preset name ----
 void LiveVoiceProcessor::getStateInformation (juce::MemoryBlock& destData)
@@ -568,7 +643,8 @@ void LiveVoiceProcessor::setStateInformation (const void* data, int sizeInBytes)
             const int s = juce::jlimit (0, 1, e->getIntAttribute ("index"));
             for (int i = 0; i < e->getNumAttributes(); ++i)
                 if (e->getAttributeName (i) != "index")
-                    slots[(size_t) s].emplace_back (e->getAttributeName (i), (float) e->getAttributeValue (i).getDoubleValue());
+                    if (const double v = e->getAttributeValue (i).getDoubleValue(); std::isfinite (v))
+                        slots[(size_t) s].emplace_back (e->getAttributeName (i), (float) v);
         }
     }
     soloTarget = soloNone;
@@ -581,15 +657,27 @@ void LiveVoiceProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (auto* notches = xml->getChildByName ("FixedNotches"))
         for (auto* e : notches->getChildIterator())
         {
+            const double f = e->getDoubleAttribute ("freq", 1000.0), d = e->getDoubleAttribute ("depth", -6.0);
+            if (! std::isfinite (f) || ! std::isfinite (d) || f < 20.0 || f > 20000.0) continue;   // corrupt entry: skip it
             dsp::FeedbackSuppressor::Command c;
             c.type = dsp::FeedbackSuppressor::Command::Type::setFixed;
-            c.freq = (float) e->getDoubleAttribute ("freq", 1000.0);
-            c.depthDb = (float) e->getDoubleAttribute ("depth", -6.0);
+            c.freq = (float) f;
+            c.depthDb = (float) juce::jlimit (-40.0, 0.0, d);
             sendNotchCommand (c);
         }
 
     xml->deleteAllChildElementsWithTagName ("FixedNotches");
     xml->deleteAllChildElementsWithTagName ("UiState");
+
+    // a corrupt value (NaN / inf) would poison the filters: drop it so the parameter keeps its default
+    for (int i = xml->getNumChildElements(); --i >= 0;)
+        if (auto* e = xml->getChildElement (i); e != nullptr && e->hasTagName ("PARAM")
+              && ! std::isfinite (e->getDoubleAttribute ("value", 0.0)))
+            xml->removeChildElement (e, true);
+
+    // RING-OUT LEARN is never restored: a session saved mid ring-out must not keep learning during the service
+    for (auto* e : xml->getChildWithTagNameIterator ("PARAM"))
+        if (e->getStringAttribute ("id") == params::fbLearn) e->setAttribute ("value", 0.0);
 
     // sessions from before 0.7.0: the high-pass lived on EQ band 1
     {
